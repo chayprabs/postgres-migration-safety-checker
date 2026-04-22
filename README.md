@@ -1,36 +1,95 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Authos
 
-## Getting Started
+Authos is a browser-first developer tools website. The product is meant to host
+multiple focused tools over time, with the PostgreSQL Migration Safety Checker
+as the first complete tool.
 
-First, run the development server:
+The first tool route is:
+
+- `/tools/postgres-migration-safety-checker`
+
+## What the product does
+
+Authos is built for careful, high-signal workflows where developers often paste
+sensitive technical input. The initial product surface focuses on PostgreSQL
+migration review because schema changes can trigger locks, rewrites, downtime,
+unsafe index rollouts, transaction surprises, and destructive operations.
+
+## Local-only privacy promise
+
+- The PostgreSQL Migration Safety Checker is designed to run analysis locally in
+  the browser.
+- No login is required for the first tool.
+- No pasted SQL is sent to a backend.
+- Raw user SQL must not be sent to analytics, telemetry, or logs.
+
+See [docs/privacy-and-telemetry.md](./docs/privacy-and-telemetry.md) for the
+full privacy boundary.
+
+## Stack
+
+- Next.js App Router
+- TypeScript with `strict` mode
+- Tailwind CSS
+- ESLint
+- `src/` directory layout
+- `@/*` import alias
+- `next-themes` for dark mode
+
+## Project structure
+
+- `src/app/*` contains routes and app-level layout/metadata.
+- `src/config/tools.ts` is the product registry for tool metadata.
+- `src/components/*` contains generic UI primitives and site chrome.
+- `src/features/postgres-migration-checker/*` contains PostgreSQL checker domain
+  contracts, constants, and feature-specific content.
+- `src/lib/site.ts` contains shared site navigation and site-wide copy.
+- `docs/*` contains architecture, privacy, and analyzer planning notes.
+
+## Run locally
+
+This project was initialized with `pnpm` because `pnpm` was available in the
+environment.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Test and verify
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+There is not yet a dedicated unit test suite. For the current baseline, use:
 
-## Learn More
+```bash
+pnpm lint
+pnpm typecheck
+pnpm build
+```
 
-To learn more about Next.js, take a look at the following resources:
+These commands cover linting, TypeScript validation, and production build
+verification.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Environment
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Copy `.env.example` to `.env.local` only if you need local overrides. The
+example file documents future-safe flags, but the baseline app does not require
+any secrets or backend credentials.
 
-## Deploy on Vercel
+## Extending Authos
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+To add another tool later:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Add a new entry to `src/config/tools.ts`.
+2. Create a feature folder under `src/features/<tool-name>`.
+3. Add the public route under `src/app/tools/<slug>/page.tsx`.
+4. Keep privacy-sensitive analysis browser-local unless there is a deliberate,
+   documented reason not to.
+
+## Additional documentation
+
+- [Architecture](./docs/architecture.md)
+- [Privacy and telemetry](./docs/privacy-and-telemetry.md)
+- [PostgreSQL migration checker rules](./docs/postgres-migration-checker-rules.md)
+"# postgres-migration-safety-checker" 
