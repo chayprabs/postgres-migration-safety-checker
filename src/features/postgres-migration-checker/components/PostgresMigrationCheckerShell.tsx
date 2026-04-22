@@ -20,8 +20,10 @@ import {
   DEFAULT_POSTGRES_MIGRATION_SAMPLE_ID,
   DEFAULT_POSTGRES_VERSION,
   FRAMEWORK_PRESET_DEFINITIONS,
+  POSTGRES_ANALYSIS_LIMITATIONS,
   getFrameworkPresetDefinition,
   getPostgresMigrationSample,
+  getPostgresVersionProfile,
   POSTGRES_MIGRATION_SAMPLE_GROUPS,
   POSTGRES_MIGRATION_SAMPLES,
   SUPPORTED_POSTGRES_VERSIONS,
@@ -29,9 +31,11 @@ import {
   type FrameworkAnalysisMetadata,
   type AnalysisResult,
   type AnalysisSettings,
+  type ConfidenceLevel,
   type Finding,
   type FrameworkPreset,
   type PostgresMigrationSample,
+  type PostgresVersionProfile,
   type PostgresVersion,
   type TableSizeProfile,
   type TransactionAssumptionMode,
@@ -72,6 +76,11 @@ type FrameworkNotesCardProps = {
   workspaceSettings: PersistedWorkspaceSettings;
 };
 
+type VersionNotesCardProps = {
+  profile: PostgresVersionProfile | null;
+  postgresVersion: PostgresVersion;
+};
+
 const WORKSPACE_SETTINGS_STORAGE_KEY =
   "authos.postgres-migration-checker.workspace-settings.v1";
 const STATUS_MESSAGE_TTL_MS = 3200;
@@ -86,27 +95,32 @@ const TABLE_SIZE_PROFILE_OPTIONS: ReadonlyArray<{
   {
     value: "unknown",
     label: "Unknown",
-    description: "Use when table size is unclear and reviewers should stay conservative.",
+    description:
+      "Cautious default when row count is unclear and the checker should avoid assuming a small-table fast path.",
   },
   {
     value: "small",
     label: "Small",
-    description: "Small tables where rewrite or validation costs are usually easier to absorb.",
+    description:
+      "Small tables where some blocking work is easier to absorb, while destructive and transaction-invalid steps still stay risky.",
   },
   {
     value: "medium",
     label: "Medium",
-    description: "Normal production tables where locking and validation still deserve scrutiny.",
+    description:
+      "Normal production sizing where locking, scans, and validation still deserve ordinary review.",
   },
   {
     value: "large",
     label: "Large",
-    description: "High-traffic tables where safer phased rollouts are usually warranted.",
+    description:
+      "High-traffic tables where the checker escalates table scans, rewrites, and non-concurrent index work.",
   },
   {
     value: "very-large",
     label: "Very large",
-    description: "Hot or massive tables where migration sequencing matters most.",
+    description:
+      "Hot or massive tables where the checker escalates rewrite, scan, and lock-risk findings aggressively.",
   },
 ];
 
@@ -390,6 +404,37 @@ function getCategoryFilterLabel(categoryFilter: ResultsCategoryFilter) {
   );
 }
 
+function getTableSizeProfileOption(tableSizeProfile: TableSizeProfile) {
+  return TABLE_SIZE_PROFILE_OPTIONS.find(
+    (profile) => profile.value === tableSizeProfile,
+  );
+}
+
+function getConfidenceDetails(confidence: ConfidenceLevel) {
+  switch (confidence) {
+    case "high":
+      return {
+        label: "High confidence",
+        tooltip: "High confidence: directly detected from SQL.",
+      };
+    case "medium":
+      return {
+        label: "Medium confidence",
+        tooltip:
+          "Medium confidence: depends on PostgreSQL metadata or table size we cannot inspect.",
+      };
+    case "low":
+      return {
+        label: "Low confidence",
+        tooltip: "Low confidence: heuristic advice.",
+      };
+  }
+}
+
+function formatAnalysisDuration(durationMs: number) {
+  return `${durationMs} ms`;
+}
+
 function createReportText({
   result,
   selectedSample,
@@ -420,6 +465,13 @@ function createReportText({
     `- Table scans: ${result.summary.risk.tableScans}`,
     `- Transaction risks: ${result.summary.risk.transactionRisks}`,
     `- Parser used: ${formatParserLabel(result.metadata.parser.parser)}`,
+    `- postgresVersionUsed: ${result.metadata.postgresVersionUsed}`,
+    `- parserVersionUsed: ${result.metadata.parserVersionUsed ?? "None"}`,
+    `- tableSizeProfile: ${result.metadata.tableSizeProfile}`,
+    `- frameworkPreset: ${result.metadata.frameworkPreset}`,
+    `- rulesRun: ${result.metadata.rulesRun.length}`,
+    `- rulesSkipped: ${result.metadata.rulesSkipped.length}`,
+    `- analysisDurationMs: ${result.metadata.analysisDurationMs}`,
     `- Runtime: ${formatRuntimeLabel(result.metadata.runtime.mode)}`,
   ];
 
@@ -473,6 +525,7 @@ function createReportText({
       lines.push(
         `${index + 1}. [${finding.severity.toUpperCase()}] ${finding.title}${objectName}`,
         `   ${finding.summary}`,
+        `   Confidence: ${getConfidenceDetails(finding.confidence).label}`,
         `   Why it matters: ${finding.whyItMatters}`,
         `   Recommended action: ${finding.recommendedAction}`,
       );
@@ -514,6 +567,13 @@ function createReportText({
     });
   }
 
+  if (result.metadata.limitations.length > 0) {
+    lines.push("", "## What this checker cannot know", "");
+    result.metadata.limitations.forEach((limitation) => {
+      lines.push(`- ${limitation}`);
+    });
+  }
+
   return lines.join("\n");
 }
 
@@ -552,6 +612,12 @@ export function PostgresMigrationCheckerShell() {
   const featuredSample =
     selectedSample ??
     getPostgresMigrationSample(DEFAULT_POSTGRES_MIGRATION_SAMPLE_ID);
+  const selectedVersionProfile = getPostgresVersionProfile(
+    workspaceSettings.postgresVersion,
+  );
+  const selectedTableSizeProfile = getTableSizeProfileOption(
+    workspaceSettings.tableSizeProfile,
+  );
   const currentSettingsSignature = getWorkspaceSettingsSignature(
     workspaceSettings,
     transactionAssumptionMode,
@@ -559,6 +625,8 @@ export function PostgresMigrationCheckerShell() {
   );
   const activeAnalysisResult = sql.trim().length === 0 ? null : analysisResult;
   const activeFrameworkMetadata = activeAnalysisResult?.metadata.framework ?? null;
+  const activeResultLimitations =
+    activeAnalysisResult?.metadata.limitations ?? [...POSTGRES_ANALYSIS_LIMITATIONS];
   const visibleFindings = activeAnalysisResult
     ? getVisibleFindings(
         activeAnalysisResult.findings,
@@ -837,6 +905,10 @@ export function PostgresMigrationCheckerShell() {
                     </option>
                   ))}
                 </select>
+                <p className="text-sm leading-6 text-muted-foreground">
+                  {selectedVersionProfile?.supportStatus ??
+                    `PostgreSQL ${workspaceSettings.postgresVersion} stays available for legacy analyzer logic, but version-specific profile notes are focused on PostgreSQL 11-18.`}
+                </p>
               </div>
 
               <div className="space-y-2">
@@ -891,6 +963,9 @@ export function PostgresMigrationCheckerShell() {
                     </option>
                   ))}
                 </select>
+                <p className="text-sm leading-6 text-muted-foreground">
+                  {selectedTableSizeProfile?.description} This is only an estimate for severity tuning. The checker does not connect to your database or inspect live row counts.
+                </p>
               </div>
 
               <div className="space-y-2">
@@ -927,12 +1002,18 @@ export function PostgresMigrationCheckerShell() {
               </div>
             </div>
 
-            <FrameworkNotesCard
-              frameworkMetadata={activeFrameworkMetadata}
-              sourceFilename={sourceFilename}
-              transactionAssumptionMode={transactionAssumptionMode}
-              workspaceSettings={workspaceSettings}
-            />
+            <div className="grid gap-4 xl:grid-cols-2">
+              <VersionNotesCard
+                profile={selectedVersionProfile}
+                postgresVersion={workspaceSettings.postgresVersion}
+              />
+              <FrameworkNotesCard
+                frameworkMetadata={activeFrameworkMetadata}
+                sourceFilename={sourceFilename}
+                transactionAssumptionMode={transactionAssumptionMode}
+                workspaceSettings={workspaceSettings}
+              />
+            </div>
 
             <div className="grid gap-3 lg:grid-cols-3">
               <SettingToggle
@@ -1228,7 +1309,7 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                       <div className="space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <p className="text-sm font-medium text-foreground">
-                            Parser and runtime status
+                            Analysis metadata
                           </p>
                           <div className="flex flex-wrap gap-2">
                             <Badge variant="outline">
@@ -1240,23 +1321,73 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                           </div>
                         </div>
 
-                        <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                           <div className="rounded-2xl border border-border bg-card px-4 py-3">
                             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              Requested target
+                              postgresVersionUsed
                             </p>
                             <p className="mt-2 text-sm font-medium text-foreground">
-                              PostgreSQL {activeAnalysisResult.metadata.parser.requestedVersion}
+                              PostgreSQL {activeAnalysisResult.metadata.postgresVersionUsed}
                             </p>
                           </div>
                           <div className="rounded-2xl border border-border bg-card px-4 py-3">
                             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              Effective parser
+                              parserVersionUsed
                             </p>
                             <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.metadata.parser.effectiveVersion
-                                ? `PostgreSQL ${activeAnalysisResult.metadata.parser.effectiveVersion}`
+                              {activeAnalysisResult.metadata.parserVersionUsed
+                                ? `PostgreSQL ${activeAnalysisResult.metadata.parserVersionUsed}`
                                 : "Not used"}
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
+                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                              tableSizeProfile
+                            </p>
+                            <p className="mt-2 text-sm font-medium text-foreground">
+                              {toHeadingCase(activeAnalysisResult.metadata.tableSizeProfile)}
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
+                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                              frameworkPreset
+                            </p>
+                            <p className="mt-2 text-sm font-medium text-foreground">
+                              {activeAnalysisResult.metadata.frameworkPreset}
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
+                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                              rulesRun
+                            </p>
+                            <p className="mt-2 text-sm font-medium text-foreground">
+                              {activeAnalysisResult.metadata.rulesRun.length}
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
+                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                              rulesSkipped
+                            </p>
+                            <p className="mt-2 text-sm font-medium text-foreground">
+                              {activeAnalysisResult.metadata.rulesSkipped.length}
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
+                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                              analysisDurationMs
+                            </p>
+                            <p className="mt-2 text-sm font-medium text-foreground">
+                              {formatAnalysisDuration(
+                                activeAnalysisResult.metadata.analysisDurationMs,
+                              )}
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
+                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                              limitations
+                            </p>
+                            <p className="mt-2 text-sm font-medium text-foreground">
+                              {activeAnalysisResult.metadata.limitations.length} known blind spots
                             </p>
                           </div>
                         </div>
@@ -1264,6 +1395,13 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                         {activeAnalysisResult.metadata.runtime.fallbackReason ? (
                           <p className="text-sm leading-7 text-muted-foreground">
                             {activeAnalysisResult.metadata.runtime.fallbackReason}
+                          </p>
+                        ) : null}
+
+                        {activeAnalysisResult.metadata.rulesSkipped.length > 0 ? (
+                          <p className="text-sm leading-7 text-muted-foreground">
+                            Rules skipped:{" "}
+                            {activeAnalysisResult.metadata.rulesSkipped.join(", ")}
                           </p>
                         ) : null}
                       </div>
@@ -1294,7 +1432,7 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                               Rules run
                             </p>
                             <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.metadata.registeredRules.length}
+                              {activeAnalysisResult.metadata.rulesRun.length}
                             </p>
                           </div>
                           <div className="rounded-2xl border border-border bg-card px-4 py-3">
@@ -1415,6 +1553,34 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                       <div className="space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <p className="text-sm font-medium text-foreground">
+                            What this checker cannot know
+                          </p>
+                          <Badge variant="outline">
+                            {activeResultLimitations.length} limits
+                          </Badge>
+                        </div>
+
+                        <p className="text-sm leading-7 text-muted-foreground">
+                          This checker does not connect to your database. It uses SQL text, the selected PostgreSQL version, the framework preset, and an estimated table-size profile only.
+                        </p>
+
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {activeResultLimitations.map((limitation) => (
+                            <div
+                              key={limitation}
+                              className="rounded-2xl border border-border bg-card px-4 py-3 text-sm leading-7 text-muted-foreground"
+                            >
+                              {limitation}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </Card>
+
+                    <Card className="border border-border bg-background px-4 py-4">
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <p className="text-sm font-medium text-foreground">
                             Parser diagnostics
                           </p>
                           <Badge variant="outline">
@@ -1500,102 +1666,116 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                           body="Statement mapping and parser diagnostics are still available above even when there are no rule findings."
                         />
                       ) : (
-                        visibleFindings.map((finding) => (
-                          <Card
-                            key={finding.id}
-                            className="border border-border bg-background px-4 py-4"
-                          >
-                            <div className="space-y-3">
-                              <div className="flex flex-wrap items-center justify-between gap-3">
-                                <div className="space-y-1">
-                                  <p className="text-sm font-medium text-foreground">
-                                    {finding.title}
-                                  </p>
-                                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                                    {finding.category} / {finding.severity}
-                                  </p>
-                                </div>
-                                {finding.lockLevel ? (
-                                  <Badge variant="outline">{finding.lockLevel}</Badge>
-                                ) : null}
-                              </div>
+                        visibleFindings.map((finding) => {
+                          const confidenceDetails = getConfidenceDetails(
+                            finding.confidence,
+                          );
 
-                              <p className="text-sm leading-7 text-muted-foreground">
-                                {finding.summary}
-                              </p>
-
-                              <div className="space-y-2 text-sm leading-7 text-muted-foreground">
-                                <p>
-                                  <span className="font-medium text-foreground">
-                                    Why it matters:
-                                  </span>{" "}
-                                  {finding.whyItMatters}
-                                </p>
-                                <p>
-                                  <span className="font-medium text-foreground">
-                                    Recommended action:
-                                  </span>{" "}
-                                  {finding.recommendedAction}
-                                </p>
-                              </div>
-
-                              {finding.lockInfo ? (
-                                <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm leading-7 text-muted-foreground">
-                                  <p>
-                                    <span className="font-medium text-foreground">
-                                      Lock behavior:
-                                    </span>{" "}
-                                    {finding.lockInfo.description}
-                                  </p>
-                                  <p>
-                                    <span className="font-medium text-foreground">
-                                      Read/write impact:
-                                    </span>{" "}
-                                    {finding.lockInfo.blocksReads
-                                      ? "Blocks reads"
-                                      : "Allows reads"}{" "}
-                                    and{" "}
-                                    {finding.lockInfo.blocksWrites
-                                      ? "blocks writes"
-                                      : "allows writes"}.
-                                  </p>
-                                </div>
-                              ) : null}
-
-                              {finding.safeRewrite ? (
-                                <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                                  <div className="space-y-3">
-                                    <div className="flex flex-wrap items-start justify-between gap-3">
-                                      <div>
-                                        <p className="text-sm font-medium text-foreground">
-                                          {finding.safeRewrite.title}
-                                        </p>
-                                        <p className="mt-1 text-sm leading-7 text-muted-foreground">
-                                          {finding.safeRewrite.summary}
-                                        </p>
-                                      </div>
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="secondary"
-                                        onClick={() => {
-                                          void handleCopySqlSnippet(
-                                            finding.safeRewrite!.sql,
-                                          );
-                                        }}
-                                      >
-                                        Copy SQL
-                                      </Button>
-                                    </div>
-                                    <pre className="overflow-x-auto rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-6 text-foreground">
-                                      <code>{finding.safeRewrite.sql}</code>
-                                    </pre>
+                          return (
+                            <Card
+                              key={finding.id}
+                              className="border border-border bg-background px-4 py-4"
+                            >
+                              <div className="space-y-3">
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                  <div className="space-y-1">
+                                    <p className="text-sm font-medium text-foreground">
+                                      {finding.title}
+                                    </p>
+                                    <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                                      {finding.category} / {finding.severity}
+                                    </p>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    <Badge
+                                      variant="outline"
+                                      title={confidenceDetails.tooltip}
+                                    >
+                                      {confidenceDetails.label}
+                                    </Badge>
+                                    {finding.lockLevel ? (
+                                      <Badge variant="outline">{finding.lockLevel}</Badge>
+                                    ) : null}
                                   </div>
                                 </div>
-                              ) : null}
-                            </div>
-                          </Card>
-                        ))
+
+                                <p className="text-sm leading-7 text-muted-foreground">
+                                  {finding.summary}
+                                </p>
+
+                                <div className="space-y-2 text-sm leading-7 text-muted-foreground">
+                                  <p>
+                                    <span className="font-medium text-foreground">
+                                      Why it matters:
+                                    </span>{" "}
+                                    {finding.whyItMatters}
+                                  </p>
+                                  <p>
+                                    <span className="font-medium text-foreground">
+                                      Recommended action:
+                                    </span>{" "}
+                                    {finding.recommendedAction}
+                                  </p>
+                                </div>
+
+                                {finding.lockInfo ? (
+                                  <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm leading-7 text-muted-foreground">
+                                    <p>
+                                      <span className="font-medium text-foreground">
+                                        Lock behavior:
+                                      </span>{" "}
+                                      {finding.lockInfo.description}
+                                    </p>
+                                    <p>
+                                      <span className="font-medium text-foreground">
+                                        Read/write impact:
+                                      </span>{" "}
+                                      {finding.lockInfo.blocksReads
+                                        ? "Blocks reads"
+                                        : "Allows reads"}{" "}
+                                      and{" "}
+                                      {finding.lockInfo.blocksWrites
+                                        ? "blocks writes"
+                                        : "allows writes"}.
+                                    </p>
+                                  </div>
+                                ) : null}
+
+                                {finding.safeRewrite ? (
+                                  <div className="rounded-2xl border border-border bg-card px-4 py-3">
+                                    <div className="space-y-3">
+                                      <div className="flex flex-wrap items-start justify-between gap-3">
+                                        <div>
+                                          <p className="text-sm font-medium text-foreground">
+                                            {finding.safeRewrite.title}
+                                          </p>
+                                          <p className="mt-1 text-sm leading-7 text-muted-foreground">
+                                            {finding.safeRewrite.summary}
+                                          </p>
+                                        </div>
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="secondary"
+                                          onClick={() => {
+                                            void handleCopySqlSnippet(
+                                              finding.safeRewrite!.sql,
+                                            );
+                                          }}
+                                        >
+                                          Copy SQL
+                                        </Button>
+                                      </div>
+                                      <pre className="overflow-x-auto rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-6 text-foreground">
+                                        <code>{finding.safeRewrite.sql}</code>
+                                      </pre>
+                                    </div>
+                                  </div>
+                                ) : null}
+                              </div>
+                            </Card>
+                          );
+                        })
                       )}
                     </>
                   )}
@@ -1669,6 +1849,106 @@ function getFrameworkPreviewReason(
   return definition.assumeTransactionDefault
     ? `${definition.label} defaults to transactional migrations unless the file or framework config explicitly disables that wrapper.`
     : `${definition.label} does not assume a transaction wrapper by default.`;
+}
+
+function VersionNotesCard({
+  profile,
+  postgresVersion,
+}: VersionNotesCardProps) {
+  if (!profile) {
+    return (
+      <Card className="border border-border bg-background px-4 py-4">
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">Version notes</p>
+              <p className="text-sm leading-7 text-muted-foreground">
+                PostgreSQL {postgresVersion} is supported by legacy analyzer logic, but the richer version-profile copy is focused on PostgreSQL 11 through 18.
+              </p>
+            </div>
+            <Badge variant="outline">PostgreSQL {postgresVersion}</Badge>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="border border-border bg-background px-4 py-4">
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-foreground">Version notes</p>
+            <p className="text-sm leading-7 text-muted-foreground">
+              {profile.supportStatus}
+            </p>
+          </div>
+          <Badge variant="outline">{profile.label}</Badge>
+        </div>
+
+        <div className="rounded-2xl border border-border bg-card px-4 py-3">
+          <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+            Parser support
+          </p>
+          <p className="mt-2 text-sm leading-7 text-muted-foreground">
+            {profile.parserSupportNotes}
+          </p>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="rounded-2xl border border-border bg-card px-4 py-3">
+            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+              ADD COLUMN default
+            </p>
+            <p className="mt-2 text-sm leading-7 text-muted-foreground">
+              {profile.addColumnDefaultNotes}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-border bg-card px-4 py-3">
+            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+              Concurrent indexes
+            </p>
+            <p className="mt-2 text-sm leading-7 text-muted-foreground">
+              {profile.concurrentIndexNotes}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-border bg-card px-4 py-3">
+            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+              Enum changes
+            </p>
+            <p className="mt-2 text-sm leading-7 text-muted-foreground">
+              {profile.enumChangeNotes}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-border bg-card px-4 py-3">
+            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+              Generated columns
+            </p>
+            <p className="mt-2 text-sm leading-7 text-muted-foreground">
+              {profile.generatedColumnNotes}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {profile.docsLinks.map((link) => (
+            <a
+              key={link.href}
+              href={link.href}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center rounded-full border border-border px-3 py-1 text-xs font-medium text-muted-foreground transition hover:border-foreground hover:text-foreground"
+            >
+              {link.label}
+            </a>
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 function FrameworkNotesCard({

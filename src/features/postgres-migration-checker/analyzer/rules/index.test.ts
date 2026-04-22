@@ -85,6 +85,46 @@ describe("postgres migration rules", () => {
     ).toBe("medium");
   });
 
+  it("tunes ADD COLUMN default findings by table size and volatility", async () => {
+    const nonVolatileSql =
+      "ALTER TABLE users ADD COLUMN status text DEFAULT 'active';";
+    const volatileSql =
+      "ALTER TABLE users ADD COLUMN external_id uuid DEFAULT gen_random_uuid();";
+    const smallResult = await analyze(nonVolatileSql, {
+      postgresVersion: 16,
+      tableSizeProfile: "small",
+    });
+    const veryLargeResult = await analyze(nonVolatileSql, {
+      postgresVersion: 16,
+      tableSizeProfile: "very-large",
+    });
+    const volatileResult = await analyze(volatileSql, {
+      postgresVersion: 16,
+      tableSizeProfile: "small",
+    });
+
+    expect(
+      getFinding(smallResult, "PGM016_ADD_COLUMN_WITH_DEFAULT_VERSION_AWARE")
+        .severity,
+    ).toBe("low");
+    expect(
+      getFinding(veryLargeResult, "PGM016_ADD_COLUMN_WITH_DEFAULT_VERSION_AWARE")
+        .severity,
+    ).toBe("high");
+    expect(
+      getFinding(volatileResult, "PGM016_ADD_COLUMN_WITH_DEFAULT_VERSION_AWARE")
+        .severity,
+    ).toBe("high");
+    expect(
+      getFinding(smallResult, "PGM016_ADD_COLUMN_WITH_DEFAULT_VERSION_AWARE")
+        .confidence,
+    ).toBe("medium");
+    expect(
+      getFinding(volatileResult, "PGM016_ADD_COLUMN_WITH_DEFAULT_VERSION_AWARE")
+        .confidence,
+    ).toBe("high");
+  });
+
   it("framework or explicit transactions affect concurrent index warnings", async () => {
     const explicitTransactionSql = `BEGIN;
 CREATE INDEX CONCURRENTLY index_users_on_email ON users (email);
@@ -155,6 +195,58 @@ ALTER TABLE users
     expect(
       getFinding(result, "PGM026_ADD_UNIQUE_OR_PRIMARY_KEY_DIRECTLY").safeRewrite,
     ).toBeDefined();
+  });
+
+  it("escalates scans and blocking index paths on larger tables", async () => {
+    const setNotNullSql = "ALTER TABLE users ALTER COLUMN email SET NOT NULL;";
+    const createIndexSql = "CREATE INDEX index_users_on_email ON users (email);";
+    const addUniqueSql =
+      "ALTER TABLE users ADD CONSTRAINT users_email_key UNIQUE (email);";
+
+    const smallSetNotNull = await analyze(setNotNullSql, {
+      tableSizeProfile: "small",
+    });
+    const largeSetNotNull = await analyze(setNotNullSql, {
+      tableSizeProfile: "large",
+    });
+    const smallCreateIndex = await analyze(createIndexSql, {
+      tableSizeProfile: "small",
+    });
+    const largeCreateIndex = await analyze(createIndexSql, {
+      tableSizeProfile: "large",
+    });
+    const smallAddUnique = await analyze(addUniqueSql, {
+      tableSizeProfile: "small",
+    });
+    const largeAddUnique = await analyze(addUniqueSql, {
+      tableSizeProfile: "large",
+    });
+
+    expect(getFinding(smallSetNotNull, "PGM014_SET_NOT_NULL_SCAN").severity).toBe(
+      "medium",
+    );
+    expect(getFinding(largeSetNotNull, "PGM014_SET_NOT_NULL_SCAN").severity).toBe(
+      "high",
+    );
+    expect(
+      getFinding(largeSetNotNull, "PGM014_SET_NOT_NULL_SCAN").confidence,
+    ).toBe("medium");
+    expect(
+      getFinding(smallCreateIndex, "PGM020_CREATE_INDEX_WITHOUT_CONCURRENTLY")
+        .severity,
+    ).toBe("medium");
+    expect(
+      getFinding(largeCreateIndex, "PGM020_CREATE_INDEX_WITHOUT_CONCURRENTLY")
+        .severity,
+    ).toBe("high");
+    expect(
+      getFinding(smallAddUnique, "PGM026_ADD_UNIQUE_OR_PRIMARY_KEY_DIRECTLY")
+        .severity,
+    ).toBe("medium");
+    expect(
+      getFinding(largeAddUnique, "PGM026_ADD_UNIQUE_OR_PRIMARY_KEY_DIRECTLY")
+        .severity,
+    ).toBe("high");
   });
 
   it("adds lock-timeout guidance only when risky locking work lacks it", async () => {
@@ -254,5 +346,45 @@ CREATE INDEX CONCURRENTLY index_users_on_email ON users (email);`,
           finding.ruleId === "PGM021_CREATE_INDEX_CONCURRENTLY_IN_TRANSACTION",
       ),
     ).toBe(false);
+  });
+
+  it("includes result metadata, parser version, and limitations", async () => {
+    const result = await analyze(
+      "CREATE INDEX index_users_on_email ON users (email);",
+      {
+        postgresVersion: 11,
+        frameworkPreset: "rails",
+        tableSizeProfile: "unknown",
+        assumeRunsInTransaction: true,
+      },
+    );
+
+    expect(result.metadata.postgresVersionUsed).toBe(11);
+    expect(result.metadata.parserVersionUsed).toBe(15);
+    expect(result.metadata.tableSizeProfile).toBe("unknown");
+    expect(result.metadata.frameworkPreset).toBe("rails");
+    expect(result.metadata.rulesRun.length).toBeGreaterThan(0);
+    expect(result.metadata.rulesSkipped).toEqual([]);
+    expect(result.metadata.analysisDurationMs).toBeGreaterThanOrEqual(0);
+    expect(result.metadata.limitations).toEqual(
+      expect.arrayContaining([
+        "Actual row count",
+        "Existing indexes or constraints",
+        "Real lock wait conditions",
+        "Replication lag",
+        "Application deploy order",
+        "Database extensions and exact function volatility",
+      ]),
+    );
+  });
+
+  it("marks heuristic advisory findings with lower confidence", async () => {
+    const result = await analyze(
+      "CREATE TABLE archived_users AS SELECT * FROM users;",
+    );
+
+    expect(
+      getFinding(result, "PGM038_CREATE_TABLE_AS_SELECT").confidence,
+    ).toBe("low");
   });
 });

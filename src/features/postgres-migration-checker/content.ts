@@ -111,7 +111,7 @@ export const postgresMigrationCheckerHowItWorksSteps = [
   {
     title: "Copy a safer rewrite or PR report",
     description:
-      "Use the eventual output to give reviewers a clearer rollout plan, safer SQL shape, and a PR-ready explanation of risk.",
+      "Use the output to give reviewers a clearer rollout plan, safer SQL shape, and a PR-ready explanation of risk.",
   },
 ] as const;
 
@@ -168,7 +168,7 @@ export const postgresMigrationCheckerFaqEntries = [
   {
     question: "What PostgreSQL versions are supported?",
     answer:
-      "The planned analyzer contracts currently target PostgreSQL 11 through 18 so teams can reason about both legacy fleets and current production versions from one review surface.",
+      "The main browser workflow targets PostgreSQL 11 through 18 with version-aware guidance, while some legacy analyzer logic still keeps older behavior in mind for rule tuning.",
   },
   {
     question: "Why is CREATE INDEX CONCURRENTLY safer?",
@@ -183,7 +183,7 @@ export const postgresMigrationCheckerFaqEntries = [
   {
     question: "Can this check Rails migrations?",
     answer:
-      "Yes, the page and future analyzer are planned to support Rails-aware review by letting you choose a framework preset and reason about helpers such as disable_ddl_transaction! and index rollout patterns.",
+      "Yes. The checker already supports a Rails preset so you can reason about helpers such as disable_ddl_transaction! and index rollout patterns alongside the SQL itself.",
   },
   {
     question: "Can I use this in CI?",

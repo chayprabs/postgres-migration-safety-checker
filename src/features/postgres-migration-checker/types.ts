@@ -270,6 +270,14 @@ export type FrameworkAnalysisMetadata = {
 };
 
 export type AnalysisMetadata = {
+  postgresVersionUsed: PostgresVersion;
+  parserVersionUsed: 15 | 16 | 17 | null;
+  tableSizeProfile: TableSizeProfile;
+  frameworkPreset: FrameworkPreset;
+  rulesRun: string[];
+  rulesSkipped: string[];
+  analysisDurationMs: number;
+  limitations: string[];
   framework: FrameworkAnalysisMetadata;
   parser: ParserResult;
   runtime: AnalysisRuntimeMetadata;

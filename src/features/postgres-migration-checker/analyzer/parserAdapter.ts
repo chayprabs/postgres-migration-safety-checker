@@ -1,5 +1,9 @@
 import type { AnalysisDiagnostic, ParserResult, PostgresVersion } from "../types";
 import {
+  getNearestParserVersion,
+  getParserSupportNotes,
+} from "../constants/postgresVersions";
+import {
   buildSqlSourceIndex,
   byteOffsetToCodeUnitOffset,
   locateSourcePosition,
@@ -52,29 +56,18 @@ function createDiagnostic(
 }
 
 function resolveParserVersion(version: PostgresVersion) {
-  if (version <= 15) {
-    return {
-      effectiveVersion: 15 as const,
-      warning:
-        version === 15
-          ? null
-          : `Parser runtime is available from PostgreSQL 15 onward, so this analysis uses the PostgreSQL 15 parser for a PostgreSQL ${version} target.`,
-    };
-  }
+  const effectiveVersion = getNearestParserVersion(version);
 
-  if (version === 16 || version === 17) {
+  if (version === effectiveVersion) {
     return {
-      effectiveVersion: version,
+      effectiveVersion,
       warning: null,
     };
   }
 
   return {
-    effectiveVersion: 17 as const,
-    warning:
-      version === 18
-        ? "Parser runtime currently tops out at PostgreSQL 17, so PostgreSQL 18 input is parsed with the PostgreSQL 17 grammar and reported as an internal compatibility warning."
-        : `Parser runtime currently tops out at PostgreSQL 17, so this analysis uses the PostgreSQL 17 parser for a PostgreSQL ${version} target.`,
+    effectiveVersion,
+    warning: getParserSupportNotes(version),
   };
 }
 

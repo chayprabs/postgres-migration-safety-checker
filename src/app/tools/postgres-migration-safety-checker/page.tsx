@@ -95,8 +95,8 @@ export default function PostgresMigrationSafetyCheckerPage() {
                 <h2 className="text-xl font-semibold">Get a review surface built for risky DDL.</h2>
                 <p className="text-sm leading-7 text-muted-foreground">
                   This landing page sets up the browser-local workspace shell for
-                  migration review, along with the copy, metadata, and structure
-                  a real tool page needs before the analyzer arrives.
+                  migration review, along with the version-aware copy, metadata,
+                  and local analysis workflow a real tool page needs.
                 </p>
               </div>
               <ul className="space-y-3 text-sm leading-7 text-muted-foreground">
@@ -153,8 +153,9 @@ export default function PostgresMigrationSafetyCheckerPage() {
               title="A fast browser workflow for migration review."
               description={
                 <p>
-                  The analyzer is not wired in yet, but the page structure is set
-                  up around the exact review flow the finished tool should support.
+                  Paste SQL, tune the PostgreSQL version and table-size estimate,
+                  and review browser-local findings with explicit confidence and
+                  limitations called out.
                 </p>
               }
             />

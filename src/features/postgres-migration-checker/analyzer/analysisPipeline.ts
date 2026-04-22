@@ -8,6 +8,7 @@ import type {
   ParserResult,
   StatementKind,
 } from "../types";
+import { POSTGRES_ANALYSIS_LIMITATIONS } from "../constants/analysisLimitations";
 import { classifyStatement } from "./classifyStatement";
 import { POSTGRES_DOCS } from "./docsLinks";
 import { buildFrameworkAnalysisMetadata } from "./frameworkContext";
@@ -481,6 +482,7 @@ export async function runAnalysisPipeline({
   sourceFilename,
   sql,
 }: AnalysisPipelineInput): Promise<AnalysisResult> {
+  const startedAt = Date.now();
   const splitStatements = splitSqlStatements(sql);
   const parserResult = await parsePostgresSql(sql, settings.postgresVersion);
   const { parser, statements } = attachParserMetadata(sql, splitStatements, parserResult);
@@ -494,7 +496,8 @@ export async function runAnalysisPipeline({
     framework.effectiveAssumeTransaction,
   );
   const parserFindings = parserDiagnosticsToFindings(parser.errors, statements);
-  const ruleFindings = runRegisteredAnalyzerRules({
+  const { findings: ruleFindings, rulesRun, rulesSkipped } =
+    runRegisteredAnalyzerRules({
     sql,
     settings,
     statements,
@@ -505,6 +508,7 @@ export async function runAnalysisPipeline({
     helpers: createRuleHelpers(transactionContext),
   });
   const findings = [...parserFindings, ...ruleFindings].sort(compareFindings);
+  const analysisDurationMs = Date.now() - startedAt;
 
   return {
     settings,
@@ -512,6 +516,14 @@ export async function runAnalysisPipeline({
     findings,
     summary: buildAnalysisSummary(findings, statements),
     metadata: {
+      postgresVersionUsed: settings.postgresVersion,
+      parserVersionUsed: parser.effectiveVersion ?? null,
+      tableSizeProfile: settings.tableSizeProfile,
+      frameworkPreset: settings.frameworkPreset,
+      rulesRun,
+      rulesSkipped,
+      analysisDurationMs,
+      limitations: [...POSTGRES_ANALYSIS_LIMITATIONS],
       framework,
       parser,
       runtime,

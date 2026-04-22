@@ -53,6 +53,10 @@ function getTableSizeRank(tableSizeProfile: TableSizeProfile) {
   }
 }
 
+function isSmallTableProfile(tableSizeProfile: TableSizeProfile) {
+  return tableSizeProfile === "small";
+}
+
 function isLargeTableProfile(tableSizeProfile: TableSizeProfile) {
   return tableSizeProfile === "large" || tableSizeProfile === "very-large";
 }
@@ -65,8 +69,48 @@ function getMediumHighSeverity(tableSizeProfile: TableSizeProfile) {
   return isLargeTableProfile(tableSizeProfile) ? "high" : "medium";
 }
 
+function getBlockingIndexSeverity(tableSizeProfile: TableSizeProfile) {
+  return getTableSizeRank(tableSizeProfile) >= 2 ? "high" : "medium";
+}
+
+function getRewriteSeverity(tableSizeProfile: TableSizeProfile) {
+  if (isVeryLargeTableProfile(tableSizeProfile)) {
+    return "critical";
+  }
+
+  return isLargeTableProfile(tableSizeProfile) ? "high" : "medium";
+}
+
 function getInfoLowSeverity(tableSizeProfile: TableSizeProfile) {
   return isLargeTableProfile(tableSizeProfile) ? "low" : "info";
+}
+
+function getFastDefaultSeverity(tableSizeProfile: TableSizeProfile) {
+  switch (tableSizeProfile) {
+    case "small":
+      return "low";
+    case "very-large":
+      return "high";
+    case "unknown":
+    case "medium":
+    case "large":
+      return "medium";
+  }
+}
+
+function getTableSizeEstimateNote(tableSizeProfile: TableSizeProfile) {
+  switch (tableSizeProfile) {
+    case "small":
+      return "The selected table-size profile is small, so this is less likely to become a long outage, but the SQL shape is still worth review.";
+    case "medium":
+      return "The selected table-size profile is medium, so the checker treats this as a normal production-risk path.";
+    case "large":
+      return "The selected table-size profile is large, so lock duration, scan time, and rewrite cost all deserve extra caution.";
+    case "very-large":
+      return "The selected table-size profile is very large, so the checker escalates scan, rewrite, and blocking-lock concerns aggressively.";
+    case "unknown":
+      return "The checker cannot inspect live row counts, so an unknown table-size profile stays on a cautious default instead of assuming a small-table fast path.";
+  }
 }
 
 function getAlterTableContextSeverity(
@@ -260,11 +304,11 @@ export const PGM010_ALTER_TABLE_ACCESS_EXCLUSIVE_DEFAULT: AnalyzerRule = {
         context.helpers.createFinding(PGM010_ALTER_TABLE_ACCESS_EXCLUSIVE_DEFAULT, {
           statement,
           severity: getAlterTableContextSeverity(context, statement.normalized),
-          confidence: "medium",
+          confidence: "low",
           summary:
-            "Many ALTER TABLE forms take ACCESS EXCLUSIVE unless PostgreSQL documents a lighter lock for that exact subcommand.",
+            "Many ALTER TABLE forms take ACCESS EXCLUSIVE unless PostgreSQL documents a lighter lock for the exact subcommand and version in use.",
           whyItMatters:
-            "ACCESS EXCLUSIVE blocks reads and writes, so even a short metadata change can become visible downtime if it waits behind production traffic.",
+            "ACCESS EXCLUSIVE blocks reads and writes, so even a short metadata change can become visible downtime if it waits behind production traffic. This rule is intentionally broad because the checker is not inspecting live metadata or exact server-side lock behavior.",
           recommendedAction:
             "Check the exact ALTER TABLE variant in the PostgreSQL docs, and prefer phased validation or expand-contract patterns when the relation is large or highly active.",
           tags: ["locking", "access-exclusive", "contextual"],
@@ -363,9 +407,7 @@ export const PGM013_ALTER_COLUMN_TYPE_REWRITE: AnalyzerRule = {
       .map((statement) =>
         context.helpers.createFinding(PGM013_ALTER_COLUMN_TYPE_REWRITE, {
           statement,
-          severity: isVeryLargeTableProfile(context.settings.tableSizeProfile)
-            ? "critical"
-            : "high",
+          severity: getRewriteSeverity(context.settings.tableSizeProfile),
           lockLevel: "ACCESS EXCLUSIVE",
           confidence: matchesPattern(statement.normalized, /\bUSING\b/i)
             ? "high"
@@ -374,7 +416,9 @@ export const PGM013_ALTER_COLUMN_TYPE_REWRITE: AnalyzerRule = {
           summary:
             "ALTER TABLE ... ALTER COLUMN ... TYPE usually rewrites the table and its indexes, especially when rows need value conversion.",
           whyItMatters:
-            "A full rewrite scales poorly on large relations, holds stronger locks, and can dramatically extend deployment time. Some binary-coercible type changes avoid rewrites, so this rule stays cautious when the exact cast behavior is unclear.",
+            `A full rewrite scales poorly on large relations, holds stronger locks, and can dramatically extend deployment time. Some binary-coercible type changes avoid rewrites, so this rule stays cautious when the exact cast behavior is unclear. ${getTableSizeEstimateNote(
+              context.settings.tableSizeProfile,
+            )}`,
           recommendedAction:
             "Prefer an expand-contract migration: add a new nullable column, backfill in batches, dual-write in the application, switch reads, and drop the old column later.",
           tags: ["rewrite-risk", "type-change", "access-exclusive"],
@@ -406,11 +450,14 @@ export const PGM014_SET_NOT_NULL_SCAN: AnalyzerRule = {
             ? "high"
             : "medium",
           lockLevel: "ACCESS EXCLUSIVE",
+          confidence: "medium",
           safeRewrite: SAFE_REWRITE_SET_NOT_NULL,
           summary:
-            "ALTER COLUMN ... SET NOT NULL can scan the table to verify that no existing rows violate the invariant.",
+            "ALTER COLUMN ... SET NOT NULL can require a verification scan unless PostgreSQL can already prove the invariant from existing validated metadata.",
           whyItMatters:
-            "Verification work grows with table size, and the surrounding ALTER TABLE lock can become disruptive on busy production tables.",
+            `Verification work grows with table size, and the surrounding ALTER TABLE lock can become disruptive on busy production tables. The checker cannot inspect existing validated CHECK constraints or table statistics, so it keeps this rule version- and metadata-aware. ${getTableSizeEstimateNote(
+              context.settings.tableSizeProfile,
+            )}`,
           recommendedAction:
             "Backfill NULL rows first, add a CHECK (col IS NOT NULL) NOT VALID constraint, validate it, and then set NOT NULL once the invariant is already proven.",
           tags: ["table-scan", "not-null", "access-exclusive"],
@@ -481,7 +528,9 @@ export const PGM016_ADD_COLUMN_WITH_DEFAULT_VERSION_AWARE: AnalyzerRule = {
         );
         const storedGeneratedColumn = hasStoredGeneratedColumn(statement.normalized);
         const identityColumn = hasIdentityColumn(statement.normalized);
-        const largeTable = getTableSizeRank(context.settings.tableSizeProfile) >= 2;
+        const tableSizeProfile = context.settings.tableSizeProfile;
+        const largeTable = getTableSizeRank(tableSizeProfile) >= 2;
+        const veryLargeTable = isVeryLargeTableProfile(tableSizeProfile);
         const riskyDefaultPath =
           context.settings.postgresVersion <= 10 ||
           heuristicallyVolatile ||
@@ -494,27 +543,48 @@ export const PGM016_ADD_COLUMN_WITH_DEFAULT_VERSION_AWARE: AnalyzerRule = {
         let confidence: "high" | "medium" = "medium";
 
         if (context.settings.postgresVersion <= 10) {
-          severity = "high";
+          severity = veryLargeTable ? "critical" : "high";
           summary =
             "On PostgreSQL 10 and earlier, adding a column with a default usually rewrites the table, which is risky on production-sized relations.";
           whyItMatters =
-            "A rewrite-heavy ADD COLUMN can hold stronger locks longer than teams expect and turn a simple-looking schema change into a disruptive deploy.";
+            `A rewrite-heavy ADD COLUMN can hold stronger locks longer than teams expect and turn a simple-looking schema change into a disruptive deploy. ${getTableSizeEstimateNote(
+              tableSizeProfile,
+            )}`;
           confidence = "high";
-        } else if (heuristicallyVolatile || storedGeneratedColumn || identityColumn) {
-          severity = "high";
-          summary = heuristicallyVolatile
-            ? "This ADD COLUMN default looks volatile, so PostgreSQL may need to touch or rewrite existing rows even on modern versions."
-            : storedGeneratedColumn
-              ? "Stored generated columns materialize values for existing rows, so adding one can be rewrite-heavy."
-              : "Identity-backed column additions can still require heavier table work than the usual PostgreSQL 11+ fast-default path.";
-          whyItMatters =
-            "Modern PostgreSQL avoids rewrites for many non-volatile defaults, but volatile expressions and stored/generated behaviors are important exceptions.";
-        } else {
-          severity = largeTable ? "medium" : "low";
+        } else if (storedGeneratedColumn) {
+          severity = veryLargeTable ? "critical" : "high";
           summary =
-            "On PostgreSQL 11+, many non-volatile ADD COLUMN ... DEFAULT changes are metadata-only, but the operational profile still deserves review on large tables.";
+            "Stored generated columns materialize values for existing rows, so adding one is much heavier than the usual PostgreSQL 11+ fast-default path.";
           whyItMatters =
-            "The fast-default optimization makes this safer than older PostgreSQL releases, yet the tool cannot prove every edge case such as constrained domains or deployment-specific compatibility assumptions.";
+            `Modern PostgreSQL avoids rewrites for many non-volatile defaults, but stored generated columns are an important exception because existing rows may need to be computed immediately. ${getTableSizeEstimateNote(
+              tableSizeProfile,
+            )}`;
+          confidence = "high";
+        } else if (heuristicallyVolatile) {
+          severity = veryLargeTable ? "critical" : "high";
+          summary =
+            "This ADD COLUMN default looks volatile, so PostgreSQL may need to evaluate it per row instead of using the usual PostgreSQL 11+ fast-default path.";
+          whyItMatters =
+            `Modern PostgreSQL avoids rewrites for many non-volatile defaults, but volatile expressions are an important exception. The checker can only infer volatility heuristically from SQL, and user-defined or extension-provided functions may still require manual verification. ${getTableSizeEstimateNote(
+              tableSizeProfile,
+            )}`;
+          confidence = "high";
+        } else if (identityColumn) {
+          severity = largeTable ? "high" : "medium";
+          summary =
+            "Identity-backed column additions are not treated like the simplest fast-default case, so they deserve review even on PostgreSQL 11+.";
+          whyItMatters =
+            `Sequence-backed behavior can still require heavier table work than a plain metadata-only default, and the checker cannot inspect the exact version details or deployment shape from SQL alone. ${getTableSizeEstimateNote(
+              tableSizeProfile,
+            )}`;
+        } else {
+          severity = getFastDefaultSeverity(tableSizeProfile);
+          summary =
+            "On PostgreSQL 11+, many non-volatile ADD COLUMN ... DEFAULT changes use a fast metadata-only path, but the checker still keeps the finding cautious when table size or exact function volatility is unknown.";
+          whyItMatters =
+            `The fast-default optimization makes this safer than older PostgreSQL releases, yet the checker cannot prove every edge case such as constrained domains, user-defined function volatility, or deployment-specific compatibility assumptions. ${getTableSizeEstimateNote(
+              tableSizeProfile,
+            )}`;
         }
 
         return context.helpers.createFinding(
@@ -527,8 +597,9 @@ export const PGM016_ADD_COLUMN_WITH_DEFAULT_VERSION_AWARE: AnalyzerRule = {
             safeRewrite: SAFE_REWRITE_ADD_COLUMN_WITH_DEFAULT,
             summary,
             whyItMatters,
-            recommendedAction:
-              "For risky defaults, separate the add, backfill, and default steps so existing rows are updated deliberately and the deploy remains reversible.",
+            recommendedAction: riskyDefaultPath
+              ? "For risky defaults, separate the add, backfill, and default steps so existing rows are updated deliberately and the deploy remains reversible."
+              : "If this default must be deploy-safe across unknown metadata or large tables, separate the add, backfill, and default steps instead of assuming the fast path is acceptable everywhere.",
             tags: [
               "add-column",
               "default",
@@ -592,25 +663,30 @@ export const PGM020_CREATE_INDEX_WITHOUT_CONCURRENTLY: AnalyzerRule = {
           extractCreateIndexRelation(statement.normalized),
         );
       })
-      .map((statement) =>
-        context.helpers.createFinding(PGM020_CREATE_INDEX_WITHOUT_CONCURRENTLY, {
+      .map((statement) => {
+        const tableSizeProfile = context.settings.tableSizeProfile;
+
+        return context.helpers.createFinding(PGM020_CREATE_INDEX_WITHOUT_CONCURRENTLY, {
           statement,
-          severity: getMediumHighSeverity(context.settings.tableSizeProfile),
+          severity: getBlockingIndexSeverity(tableSizeProfile),
           lockLevel: "SHARE",
           safeRewrite: SAFE_REWRITE_CREATE_INDEX_CONCURRENTLY,
           objectName:
             extractCreateIndexRelation(statement.normalized) ?? statement.targetObject,
-          summary:
-            "CREATE INDEX without CONCURRENTLY uses the blocking build path, which prevents concurrent writes while the index is being built.",
+          summary: isSmallTableProfile(tableSizeProfile)
+            ? "CREATE INDEX without CONCURRENTLY uses the blocking build path. On a genuinely small table this may finish quickly, but concurrent writes still wait while the index is built."
+            : "CREATE INDEX without CONCURRENTLY uses the blocking build path, which prevents concurrent writes while the index is being built.",
           whyItMatters:
-            "That applies to regular, unique, partial, expression, and access-method-specific indexes alike. On large tables the build can run long enough to stall application traffic.",
+            `That applies to regular, unique, partial, expression, and access-method-specific indexes alike. ${getTableSizeEstimateNote(
+              tableSizeProfile,
+            )}`,
           recommendedAction: appendFrameworkAdvice(
             "Prefer CREATE INDEX CONCURRENTLY for online rollouts, and reserve the plain build path for maintenance windows or obviously low-traffic tables.",
             getFrameworkIndexAdvice(context),
           ),
           tags: ["create-index", "non-concurrent", "write-blocking"],
-        }),
-      );
+        });
+      });
   },
 };
 
@@ -637,6 +713,7 @@ export const PGM021_CREATE_INDEX_CONCURRENTLY_IN_TRANSACTION: AnalyzerRule = {
           {
             statement,
             severity: insideExplicitTransaction ? "critical" : "high",
+            confidence: insideExplicitTransaction ? "high" : "medium",
             safeRewrite: SAFE_REWRITE_CREATE_INDEX_CONCURRENTLY,
             summary: insideExplicitTransaction
               ? "CREATE INDEX CONCURRENTLY appears inside an explicit BEGIN ... COMMIT block, which PostgreSQL rejects."
@@ -815,7 +892,7 @@ export const PGM026_ADD_UNIQUE_OR_PRIMARY_KEY_DIRECTLY: AnalyzerRule = {
           PGM026_ADD_UNIQUE_OR_PRIMARY_KEY_DIRECTLY,
           {
             statement,
-            severity: getMediumHighSeverity(context.settings.tableSizeProfile),
+            severity: getBlockingIndexSeverity(context.settings.tableSizeProfile),
             lockLevel: "SHARE",
             safeRewrite: primaryKey
               ? SAFE_REWRITE_ADD_PRIMARY_KEY_USING_INDEX
@@ -824,7 +901,9 @@ export const PGM026_ADD_UNIQUE_OR_PRIMARY_KEY_DIRECTLY: AnalyzerRule = {
               ? "Adding a PRIMARY KEY directly can build the backing unique index and validate it in the same disruptive migration step."
               : "Adding a UNIQUE constraint directly can build the backing index and validate duplicates inline instead of using a safer staged path.",
             whyItMatters:
-              "Direct constraint creation can scan or sort large relations while writes are blocked, which is much harder to absorb on busy production tables.",
+              `Direct constraint creation can scan or sort large relations while writes are blocked, which is much harder to absorb on busy production tables. ${getTableSizeEstimateNote(
+                context.settings.tableSizeProfile,
+              )}`,
             recommendedAction: appendFrameworkAdvice(
               "Create the unique index concurrently first, then attach the constraint with ALTER TABLE ... ADD CONSTRAINT ... USING INDEX where that pattern is supported.",
               getFrameworkConstraintAdvice(context),
@@ -977,11 +1056,14 @@ export const PGM030_LONG_RUNNING_BACKFILL_IN_MIGRATION: AnalyzerRule = {
         context.helpers.createFinding(PGM030_LONG_RUNNING_BACKFILL_IN_MIGRATION, {
           statement,
           severity: getMediumHighSeverity(context.settings.tableSizeProfile),
+          confidence: "low",
           safeRewrite: SAFE_REWRITE_BATCHED_BACKFILL,
           summary:
             "This statement looks like an unbounded bulk data change running inside the migration itself.",
           whyItMatters:
-            "Large backfills or deletes keep transactions open longer, increase replication lag, create table bloat, and extend the lifetime of any locks already held by the migration.",
+            `Large backfills or deletes keep transactions open longer, increase replication lag, create table bloat, and extend the lifetime of any locks already held by the migration. This rule is heuristic because the checker cannot inspect row counts, predicates that were optimized away, or actual database statistics. ${getTableSizeEstimateNote(
+              context.settings.tableSizeProfile,
+            )}`,
           recommendedAction:
             "Move the backfill into batched work outside the schema migration, using primary-key ranges or a job queue so the rollout can be observed and paused safely.",
           tags: ["backfill", "table-scan", "transaction-risk"],
@@ -1047,25 +1129,32 @@ export const PGM033_ENUM_VALUE_CHANGE: AnalyzerRule = {
         if (addValue) {
           const insideTransaction =
             context.helpers.isStatementEffectivelyInTransaction(statement);
+          const insideExplicitTransaction =
+            context.helpers.isStatementInsideExplicitTransaction(statement);
           const severity: FindingSeverity =
-            insideTransaction || context.settings.postgresVersion <= 11
-              ? "medium"
-              : "low";
+            context.settings.postgresVersion <= 11 && insideTransaction
+              ? "high"
+              : insideTransaction
+                ? "medium"
+                : "low";
           const summary =
             context.settings.postgresVersion <= 11 && insideTransaction
-              ? "ALTER TYPE ... ADD VALUE is especially awkward in transaction-wrapped migrations on PostgreSQL 10-11."
-              : insideTransaction
-                ? "ALTER TYPE ... ADD VALUE inside a transaction block is allowed on newer PostgreSQL versions, but the new enum value cannot be used until the transaction commits."
-                : "Adding an enum value is usually the safest enum evolution path, but it still needs rollout coordination.";
+              ? "On PostgreSQL 11, ALTER TYPE ... ADD VALUE cannot run inside a transaction block, so transaction-wrapped migrations are likely to fail."
+              : context.settings.postgresVersion <= 11
+                ? "Adding an enum value is usually the safest enum evolution path on PostgreSQL 11, but older transaction rules still deserve review."
+                : insideTransaction
+                  ? "On PostgreSQL 12+, ALTER TYPE ... ADD VALUE can run inside a transaction block, but the new enum value cannot be used until the transaction commits."
+                  : "Adding an enum value is usually the safest enum evolution path, but it still needs rollout coordination.";
 
           return context.helpers.createFinding(PGM033_ENUM_VALUE_CHANGE, {
             statement,
             severity,
-            confidence: "medium",
+            confidence:
+              insideExplicitTransaction || !insideTransaction ? "high" : "medium",
             safeRewrite: SAFE_REWRITE_SAFE_ENUM_DEPLOYMENT,
             summary,
             whyItMatters:
-              "Enum changes are hard to roll back, and mixed-version application fleets may not all understand the new label at the same time.",
+              "Enum changes are hard to roll back, and mixed-version application fleets may not all understand the new label at the same time. The checker also cannot inspect application deploy order or whether a framework preset really matches the production runner.",
             recommendedAction:
               "Roll enum additions out separately from application behavior changes, and be extra careful with transaction-wrapped migration frameworks on older PostgreSQL versions.",
             tags: ["enum", "application-compatibility"],
@@ -1110,6 +1199,7 @@ export const PGM034_CREATE_TRIGGER_OR_ENABLE_TRIGGER: AnalyzerRule = {
         context.helpers.createFinding(PGM034_CREATE_TRIGGER_OR_ENABLE_TRIGGER, {
           statement,
           severity: getMediumHighSeverity(context.settings.tableSizeProfile),
+          confidence: "medium",
           lockLevel:
             statement.kind === "create-trigger"
               ? "SHARE ROW EXCLUSIVE"
@@ -1117,7 +1207,7 @@ export const PGM034_CREATE_TRIGGER_OR_ENABLE_TRIGGER: AnalyzerRule = {
           summary:
             "Creating, enabling, or disabling triggers changes live write behavior and may require stronger locks while the change is applied.",
           whyItMatters:
-            "Triggers can increase write latency, change data semantics, and surprise downstream systems if they are introduced or toggled without coordination.",
+            "Triggers can increase write latency, change data semantics, and surprise downstream systems if they are introduced or toggled without coordination. The checker does not inspect the trigger function body, extension dependencies, or row-level workload shape.",
           recommendedAction:
             "Review trigger behavior like application code, isolate trigger changes from unrelated risky DDL, and confirm the write-path impact before deployment.",
           tags: ["trigger", "write-path"],
@@ -1173,6 +1263,7 @@ export const PGM036_CREATE_EXTENSION: AnalyzerRule = {
           statement,
           severity:
             context.settings.frameworkPreset === "raw-sql" ? "low" : "medium",
+          confidence: "low",
           summary:
             "CREATE EXTENSION can fail in managed or least-privilege production environments even when it works in development.",
           whyItMatters:
@@ -1234,11 +1325,14 @@ export const PGM038_CREATE_TABLE_AS_SELECT: AnalyzerRule = {
         context.helpers.createFinding(PGM038_CREATE_TABLE_AS_SELECT, {
           statement,
           severity: getMediumHighSeverity(context.settings.tableSizeProfile),
+          confidence: "low",
           safeRewrite: SAFE_REWRITE_BATCHED_BACKFILL,
           summary:
             "This looks like a bulk data copy into a new table, which can run much longer than ordinary DDL on production-sized datasets.",
           whyItMatters:
-            "Large copy operations extend transaction time, compete for I/O, and are harder to pause or retry safely when bundled into an application migration.",
+            `Large copy operations extend transaction time, compete for I/O, and are harder to pause or retry safely when bundled into an application migration. This rule is heuristic because the checker cannot inspect actual row counts or query plans. ${getTableSizeEstimateNote(
+              context.settings.tableSizeProfile,
+            )}`,
           recommendedAction:
             "Plan bulk copy operations like backfills: isolate them, observe them, and batch or stage them when the data volume is significant.",
           tags: ["bulk-copy", "transaction-risk"],
@@ -1279,6 +1373,7 @@ export const PGM031_MISSING_LOCK_TIMEOUT: AnalyzerRule = {
       context.helpers.createFinding(PGM031_MISSING_LOCK_TIMEOUT, {
         statement: anchorStatement,
         severity: "medium",
+        confidence: "medium",
         safeRewrite: SAFE_REWRITE_LOCK_TIMEOUT_PREAMBLE,
         summary: hasStatementTimeout
           ? "This migration already sets statement_timeout, but it does not set lock_timeout even though it includes high-risk locking operations."
@@ -1318,6 +1413,7 @@ export const PGM039_MULTIPLE_RISKY_DDL_IN_ONE_MIGRATION: AnalyzerRule = {
       context.helpers.createFinding(PGM039_MULTIPLE_RISKY_DDL_IN_ONE_MIGRATION, {
         statement: anchorStatement,
         severity: "high",
+        confidence: "medium",
         safeRewrite: SAFE_REWRITE_SPLIT_RISKY_MIGRATION,
         summary:
           "This migration already contains several high- or critical-risk findings across multiple statements, which raises the overall deploy blast radius.",
@@ -1372,7 +1468,24 @@ export const REGISTERED_ANALYZER_RULES = [
   ...DERIVED_ANALYZER_RULES,
 ] as const satisfies readonly AnalyzerRule[];
 
+type RegisteredRuleExecutionResult = {
+  findings: Finding[];
+  rulesRun: string[];
+  rulesSkipped: string[];
+};
+
 export function runRegisteredAnalyzerRules(context: AnalyzerRuleContext) {
+  if (
+    context.settings.stopAfterParseError &&
+    context.parserResult.errors.some((diagnostic) => diagnostic.severity === "error")
+  ) {
+    return {
+      findings: [],
+      rulesRun: [],
+      rulesSkipped: REGISTERED_ANALYZER_RULES.map((rule) => rule.id),
+    } satisfies RegisteredRuleExecutionResult;
+  }
+
   const baseFindings = BASE_ANALYZER_RULES.flatMap((rule) =>
     rule.evaluate({
       ...context,
@@ -1386,5 +1499,9 @@ export function runRegisteredAnalyzerRules(context: AnalyzerRuleContext) {
     }),
   );
 
-  return [...baseFindings, ...derivedFindings].sort(compareFindings);
+  return {
+    findings: [...baseFindings, ...derivedFindings].sort(compareFindings),
+    rulesRun: REGISTERED_ANALYZER_RULES.map((rule) => rule.id),
+    rulesSkipped: [],
+  } satisfies RegisteredRuleExecutionResult;
 }
