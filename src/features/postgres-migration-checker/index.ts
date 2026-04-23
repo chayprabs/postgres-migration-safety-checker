@@ -3,6 +3,7 @@ export * from "./structuredData";
 export * from "./types";
 export * from "./samples";
 export * from "./analyzer/analyzeMigration";
+export * from "./analyzer/recipes";
 export * from "./analyzer/rules";
 export * from "./components/PostgresMigrationCheckerShell";
 export * from "./constants/analysisLimitations";

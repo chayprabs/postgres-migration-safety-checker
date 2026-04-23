@@ -155,6 +155,7 @@ export type Finding = {
   columnStart?: number;
   columnEnd?: number;
   objectName?: string;
+  redactedPreview?: string;
   lockLevel?: LockLevel;
   lockInfo?: LockInfo;
   whyItMatters: string;
@@ -290,6 +291,7 @@ export type AnalysisResult = {
   settings: AnalysisSettings;
   statements: MigrationStatement[];
   findings: Finding[];
+  safeRewriteRecipeGroups: import("./analyzer/recipes/types").FindingRecipeGroup[];
   summary: AnalysisSummary;
   metadata: AnalysisMetadata;
   analyzerVersion: string;

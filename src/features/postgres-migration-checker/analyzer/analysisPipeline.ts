@@ -13,12 +13,14 @@ import { classifyStatement } from "./classifyStatement";
 import { POSTGRES_DOCS } from "./docsLinks";
 import { buildFrameworkAnalysisMetadata } from "./frameworkContext";
 import { parsePostgresSql } from "./parserAdapter";
+import { buildSafeRewriteRecipeGroups } from "./recipes";
 import { buildAnalysisSummary } from "./riskSummary";
 import {
   REGISTERED_ANALYZER_RULES,
   runRegisteredAnalyzerRules,
 } from "./rules";
 import { createRuleHelpers, detectTransactionContext } from "./rules/utils";
+import { createSecretDetectionFindings } from "./security/secretDetection";
 import {
   buildSqlSourceIndex,
   byteOffsetToCodeUnitOffset,
@@ -41,7 +43,7 @@ type TopLevelAstStatement = {
   targetObject?: string;
 };
 
-const ANALYZER_VERSION = "pipeline-0.3.0";
+const ANALYZER_VERSION = "pipeline-0.4.0";
 const PARSER_DIAGNOSTIC_DOCS = [POSTGRES_DOCS.lexicalStructure];
 
 function getSourceFingerprint(sql: string, statements: MigrationStatement[]) {
@@ -496,24 +498,38 @@ export async function runAnalysisPipeline({
     framework.effectiveAssumeTransaction,
   );
   const parserFindings = parserDiagnosticsToFindings(parser.errors, statements);
+  const secretFindings = createSecretDetectionFindings({
+    sql,
+    statements,
+  });
   const { findings: ruleFindings, rulesRun, rulesSkipped } =
     runRegisteredAnalyzerRules({
-    sql,
-    settings,
-    statements,
+      sql,
+      settings,
+      statements,
     parserResult: parser,
     framework,
     priorFindings: [],
-    transactionContext,
-    helpers: createRuleHelpers(transactionContext),
-  });
-  const findings = [...parserFindings, ...ruleFindings].sort(compareFindings);
+      transactionContext,
+      helpers: createRuleHelpers(transactionContext),
+    });
+  const findings = [...parserFindings, ...secretFindings, ...ruleFindings].sort(
+    compareFindings,
+  );
+  const safeRewriteRecipeGroups = settings.includeSafeRewrites
+    ? buildSafeRewriteRecipeGroups({
+        findings,
+        framework,
+        statements,
+      })
+    : [];
   const analysisDurationMs = Date.now() - startedAt;
 
   return {
     settings,
     statements,
     findings,
+    safeRewriteRecipeGroups,
     summary: buildAnalysisSummary(findings, statements),
     metadata: {
       postgresVersionUsed: settings.postgresVersion,

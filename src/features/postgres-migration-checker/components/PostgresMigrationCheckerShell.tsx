@@ -10,12 +10,18 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import type { ChangeEvent, ReactNode } from "react";
+import type { ChangeEvent } from "react";
 import { ShieldCheck, Upload } from "lucide-react";
 import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { CodeEditor } from "@/components/code/CodeEditor";
+import {
+  trackAnalysisCompleted,
+  trackReportCopied,
+  trackToolOpened,
+  type AnalyticsSettingsSummary,
+} from "@/lib/analytics";
 import {
   DEFAULT_POSTGRES_MIGRATION_SAMPLE_ID,
   DEFAULT_POSTGRES_VERSION,
@@ -27,20 +33,45 @@ import {
   POSTGRES_MIGRATION_SAMPLE_GROUPS,
   POSTGRES_MIGRATION_SAMPLES,
   SUPPORTED_POSTGRES_VERSIONS,
-  type AnalysisDiagnostic,
   type FrameworkAnalysisMetadata,
   type AnalysisResult,
   type AnalysisSettings,
   type ConfidenceLevel,
+  type FindingCategory,
+  type FindingRecipeGroup,
   type Finding,
   type FrameworkPreset,
   type PostgresMigrationSample,
   type PostgresVersionProfile,
   type PostgresVersion,
+  type SafeRewriteRecipe,
   type TableSizeProfile,
   type TransactionAssumptionMode,
 } from "@/features/postgres-migration-checker";
+import { redactSecretsInText } from "../analyzer/security/secretDetection";
 import { analyzeInWorkerOrMainThread } from "../analyzer/worker/client";
+import {
+  AnalysisMetadata as AnalysisMetadataPanel,
+  FindingDetail,
+  FindingsList,
+  FindingsToolbar,
+  LimitationsPanel,
+  RiskScoreCard,
+  RiskSummary,
+  SafeRewritePanel,
+  type FindingsCategoryFilter,
+  type FindingsSeverityFilter,
+  type FindingsSortMode,
+} from "./results";
+import { createHtmlReport } from "../reports/htmlReport";
+import { createMarkdownReport } from "../reports/markdownReport";
+import { stringifyJsonReport } from "../reports/jsonReport";
+import {
+  downloadTextFile,
+  getReportFilenames,
+  openPrintReport,
+} from "../reports/download";
+import type { ReportExportInput } from "../reports/types";
 
 type PersistedWorkspaceSettings = {
   autoAnalyze: boolean;
@@ -50,16 +81,6 @@ type PersistedWorkspaceSettings = {
   showLowSeverity: boolean;
   tableSizeProfile: TableSizeProfile;
 };
-
-type ResultsCategoryFilter =
-  | "all"
-  | "locking"
-  | "rewrite"
-  | "index"
-  | "constraint"
-  | "data-loss"
-  | "transaction"
-  | "framework";
 
 type StatusTone = "default" | "error";
 
@@ -81,11 +102,71 @@ type VersionNotesCardProps = {
   postgresVersion: PostgresVersion;
 };
 
+type ResultsTab = "findings" | "safe-rewrites";
+type ShareableCheckerState = {
+  categoryFilter?: FindingsCategoryFilter;
+  frameworkPreset?: FrameworkPreset;
+  postgresVersion?: PostgresVersion;
+  resultsTab?: ResultsTab;
+  severityFilter?: FindingsSeverityFilter;
+  showLowSeverity?: boolean;
+  showOnlyBlockingRisks?: boolean;
+  showSafeRewritesOnly?: boolean;
+  sortMode?: FindingsSortMode;
+  tableSizeProfile?: TableSizeProfile;
+};
+
 const WORKSPACE_SETTINGS_STORAGE_KEY =
   "authos.postgres-migration-checker.workspace-settings.v1";
+const TOOL_ID = "postgres-migration-safety-checker";
 const STATUS_MESSAGE_TTL_MS = 3200;
 const workspaceSettingsListeners = new Set<() => void>();
 let inMemoryWorkspaceSettings: PersistedWorkspaceSettings | null = null;
+
+const PRIVACY_PANEL_POINTS = [
+  "SQL is processed client-side.",
+  "File uploads are read by the browser only.",
+  "Settings may be stored locally.",
+  "Raw SQL is not included in analytics.",
+  "Reports are generated locally.",
+  "Settings links do not include SQL.",
+] as const;
+
+const FINDINGS_SEVERITY_FILTER_VALUES = [
+  "all",
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "info",
+] as const satisfies readonly FindingsSeverityFilter[];
+
+const FINDINGS_CATEGORY_FILTER_VALUES = [
+  "all",
+  "locking",
+  "rewrite",
+  "index",
+  "constraint",
+  "data-loss",
+  "transaction",
+  "framework",
+  "version",
+  "reversibility",
+  "performance",
+  "security",
+  "syntax",
+] as const satisfies readonly FindingsCategoryFilter[];
+
+const FINDINGS_SORT_MODE_VALUES = [
+  "severity",
+  "statement-order",
+  "category",
+] as const satisfies readonly FindingsSortMode[];
+
+const RESULTS_TAB_VALUES = [
+  "findings",
+  "safe-rewrites",
+] as const satisfies readonly ResultsTab[];
 
 const TABLE_SIZE_PROFILE_OPTIONS: ReadonlyArray<{
   description: string;
@@ -122,20 +203,6 @@ const TABLE_SIZE_PROFILE_OPTIONS: ReadonlyArray<{
     description:
       "Hot or massive tables where the checker escalates rewrite, scan, and lock-risk findings aggressively.",
   },
-];
-
-const RESULTS_CATEGORY_FILTER_OPTIONS: ReadonlyArray<{
-  label: string;
-  value: ResultsCategoryFilter;
-}> = [
-  { value: "all", label: "All" },
-  { value: "locking", label: "Locking" },
-  { value: "rewrite", label: "Rewrite" },
-  { value: "index", label: "Indexes" },
-  { value: "constraint", label: "Constraints" },
-  { value: "data-loss", label: "Data loss" },
-  { value: "transaction", label: "Transactions" },
-  { value: "framework", label: "Framework" },
 ];
 
 const TRANSACTION_ASSUMPTION_OPTIONS: ReadonlyArray<{
@@ -255,6 +322,120 @@ function isTableSizeProfile(value: unknown): value is TableSizeProfile {
   return TABLE_SIZE_PROFILE_OPTIONS.some((profile) => profile.value === value);
 }
 
+function isFindingsSeverityFilter(value: unknown): value is FindingsSeverityFilter {
+  return FINDINGS_SEVERITY_FILTER_VALUES.some((filter) => filter === value);
+}
+
+function isFindingsCategoryFilter(value: unknown): value is FindingsCategoryFilter {
+  return FINDINGS_CATEGORY_FILTER_VALUES.some((filter) => filter === value);
+}
+
+function isFindingsSortMode(value: unknown): value is FindingsSortMode {
+  return FINDINGS_SORT_MODE_VALUES.some((filter) => filter === value);
+}
+
+function isResultsTab(value: unknown): value is ResultsTab {
+  return RESULTS_TAB_VALUES.some((filter) => filter === value);
+}
+
+function parseShareableBoolean(value: string | null) {
+  if (value === null) {
+    return undefined;
+  }
+
+  return value === "1" || value === "true";
+}
+
+function readShareableCheckerStateFromHash() {
+  if (typeof window === "undefined" || !window.location.hash.startsWith("#share:")) {
+    return null;
+  }
+
+  const params = new URLSearchParams(window.location.hash.slice("#share:".length));
+  const postgresVersionRaw = params.get("pg");
+  const parsedPostgresVersion = postgresVersionRaw
+    ? Number(postgresVersionRaw)
+    : null;
+  const frameworkPreset = params.get("fw");
+  const tableSizeProfile = params.get("size");
+  const severityFilter = params.get("sev");
+  const categoryFilter = params.get("cat");
+  const sortMode = params.get("sort");
+  const resultsTab = params.get("tab");
+
+  return {
+    postgresVersion:
+      parsedPostgresVersion !== null && isPostgresVersion(parsedPostgresVersion)
+        ? parsedPostgresVersion
+        : undefined,
+    frameworkPreset:
+      frameworkPreset && isFrameworkPreset(frameworkPreset)
+        ? frameworkPreset
+        : undefined,
+    tableSizeProfile:
+      tableSizeProfile && isTableSizeProfile(tableSizeProfile)
+        ? tableSizeProfile
+        : undefined,
+    severityFilter:
+      severityFilter && isFindingsSeverityFilter(severityFilter)
+        ? severityFilter
+        : undefined,
+    categoryFilter:
+      categoryFilter && isFindingsCategoryFilter(categoryFilter)
+        ? categoryFilter
+        : undefined,
+    sortMode:
+      sortMode && isFindingsSortMode(sortMode) ? sortMode : undefined,
+    resultsTab:
+      resultsTab && isResultsTab(resultsTab) ? resultsTab : undefined,
+    showLowSeverity: parseShareableBoolean(params.get("low")),
+    showOnlyBlockingRisks: parseShareableBoolean(params.get("blocking")),
+    showSafeRewritesOnly: parseShareableBoolean(params.get("rewrites")),
+  } satisfies ShareableCheckerState;
+}
+
+function buildShareableCheckerLink({
+  categoryFilter,
+  frameworkPreset,
+  postgresVersion,
+  resultsTab,
+  severityFilter,
+  showLowSeverity,
+  showOnlyBlockingRisks,
+  showSafeRewritesOnly,
+  sortMode,
+  tableSizeProfile,
+}: {
+  categoryFilter: FindingsCategoryFilter;
+  frameworkPreset: FrameworkPreset;
+  postgresVersion: PostgresVersion;
+  resultsTab: ResultsTab;
+  severityFilter: FindingsSeverityFilter;
+  showLowSeverity: boolean;
+  showOnlyBlockingRisks: boolean;
+  showSafeRewritesOnly: boolean;
+  sortMode: FindingsSortMode;
+  tableSizeProfile: TableSizeProfile;
+}) {
+  const baseUrl = new URL(window.location.href);
+  const shareUrl = new URL(baseUrl.origin + baseUrl.pathname);
+  const params = new URLSearchParams();
+
+  params.set("pg", String(postgresVersion));
+  params.set("fw", frameworkPreset);
+  params.set("size", tableSizeProfile);
+  params.set("sev", severityFilter);
+  params.set("cat", categoryFilter);
+  params.set("blocking", showOnlyBlockingRisks ? "1" : "0");
+  params.set("rewrites", showSafeRewritesOnly ? "1" : "0");
+  params.set("sort", sortMode);
+  params.set("low", showLowSeverity ? "1" : "0");
+  params.set("tab", resultsTab);
+  shareUrl.hash = `share:${params.toString()}`;
+
+  return shareUrl.toString();
+}
+
 function mergePersistedWorkspaceSettings(
   rawValue: unknown,
 ): PersistedWorkspaceSettings {
@@ -321,38 +502,35 @@ function buildAnalysisSettings(
   };
 }
 
-function getVisibleFindings(
+function buildAnalyticsSettingsSummary(
+  settings: PersistedWorkspaceSettings,
+  transactionAssumptionMode: TransactionAssumptionMode,
+): AnalyticsSettingsSummary {
+  return {
+    postgresVersion: settings.postgresVersion,
+    frameworkPreset: settings.frameworkPreset,
+    tableSizeProfile: settings.tableSizeProfile,
+    redactionMode: settings.redactionMode,
+    autoAnalyze: settings.autoAnalyze,
+    transactionAssumptionMode,
+  };
+}
+
+function getOutputSqlSnippet(sqlSnippet: string, redactionMode: boolean) {
+  return redactionMode ? redactSecretsInText(sqlSnippet) : sqlSnippet;
+}
+
+function getBaseVisibleFindings(
   findings: readonly Finding[],
   showLowSeverity: boolean,
-  categoryFilter: ResultsCategoryFilter,
 ) {
   return findings.filter((finding) => {
     if (!showLowSeverity && finding.severity === "low") {
       return false;
     }
 
-    if (categoryFilter === "all") {
-      return true;
-    }
-
-    return finding.category === categoryFilter;
+    return true;
   });
-}
-
-function countFindingsBySeverity(findings: readonly Finding[]) {
-  return findings.reduce(
-    (counts, finding) => {
-      counts[finding.severity] += 1;
-      return counts;
-    },
-    {
-      critical: 0,
-      high: 0,
-      medium: 0,
-      low: 0,
-      info: 0,
-    },
-  );
 }
 
 function toHeadingCase(value: string) {
@@ -360,29 +538,6 @@ function toHeadingCase(value: string) {
     .split("-")
     .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
     .join(" ");
-}
-
-function formatParserLabel(parser: AnalysisResult["metadata"]["parser"]["parser"]) {
-  switch (parser) {
-    case "supabase-pg-parser":
-      return "Supabase PG parser";
-    case "fallback":
-      return "Fallback classifier";
-    default:
-      return "No parser";
-  }
-}
-
-function formatRuntimeLabel(mode: AnalysisResult["metadata"]["runtime"]["mode"]) {
-  return mode === "worker" ? "Web Worker" : "Main thread";
-}
-
-function formatDiagnosticLocation(diagnostic: AnalysisDiagnostic) {
-  if (diagnostic.line && diagnostic.column) {
-    return `Line ${diagnostic.line}, column ${diagnostic.column}`;
-  }
-
-  return "Global";
 }
 
 function getWorkspaceSettingsSignature(
@@ -395,13 +550,6 @@ function getWorkspaceSettingsSignature(
     sourceFilename,
     transactionAssumptionMode,
   });
-}
-
-function getCategoryFilterLabel(categoryFilter: ResultsCategoryFilter) {
-  return (
-    RESULTS_CATEGORY_FILTER_OPTIONS.find((option) => option.value === categoryFilter)
-      ?.label ?? "All"
-  );
 }
 
 function getTableSizeProfileOption(tableSizeProfile: TableSizeProfile) {
@@ -431,146 +579,362 @@ function getConfidenceDetails(confidence: ConfidenceLevel) {
   }
 }
 
-function formatAnalysisDuration(durationMs: number) {
-  return `${durationMs} ms`;
+function getAvailableFindingCategories(findings: readonly Finding[]) {
+  return [...new Set(findings.map((finding) => finding.category))].sort(
+    (left, right) => left.localeCompare(right),
+  ) as FindingCategory[];
 }
 
-function createReportText({
-  result,
-  selectedSample,
-  settings,
-  selectedCategoryFilter,
-  visibleFindings,
+function matchesFindingSearch(finding: Finding, searchTerm: string) {
+  if (searchTerm.trim().length === 0) {
+    return true;
+  }
+
+  const comparable = searchTerm.trim().toLowerCase();
+  const haystack = [
+    finding.title,
+    finding.summary,
+    finding.whyItMatters,
+    finding.recommendedAction,
+    finding.ruleId,
+    finding.objectName,
+    finding.lockLevel,
+    ...finding.tags,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return haystack.includes(comparable);
+}
+
+function isBlockingRiskFinding(finding: Finding) {
+  return Boolean(finding.lockInfo?.blocksReads || finding.lockInfo?.blocksWrites);
+}
+
+function getSeveritySortRank(severity: Finding["severity"]) {
+  switch (severity) {
+    case "critical":
+      return 0;
+    case "high":
+      return 1;
+    case "medium":
+      return 2;
+    case "low":
+      return 3;
+    case "info":
+      return 4;
+  }
+}
+
+function sortFindings(findings: readonly Finding[], sortMode: FindingsSortMode) {
+  return [...findings].sort((left, right) => {
+    if (sortMode === "severity") {
+      return (
+        getSeveritySortRank(left.severity) - getSeveritySortRank(right.severity) ||
+        left.statementIndex - right.statementIndex ||
+        left.ruleId.localeCompare(right.ruleId)
+      );
+    }
+
+    if (sortMode === "category") {
+      return (
+        left.category.localeCompare(right.category) ||
+        getSeveritySortRank(left.severity) - getSeveritySortRank(right.severity) ||
+        left.statementIndex - right.statementIndex
+      );
+    }
+
+    return (
+      left.statementIndex - right.statementIndex ||
+      getSeveritySortRank(left.severity) - getSeveritySortRank(right.severity) ||
+      left.ruleId.localeCompare(right.ruleId)
+    );
+  });
+}
+
+function getFrameworkNoteForFinding(
+  finding: Finding | null,
+  frameworkMetadata: FrameworkAnalysisMetadata | null,
+) {
+  if (!finding || !frameworkMetadata || frameworkMetadata.preset === "raw-sql") {
+    return null;
+  }
+
+  if (finding.category === "index") {
+    return frameworkMetadata.safeIndexAdvice;
+  }
+
+  if (finding.category === "constraint") {
+    return frameworkMetadata.safeConstraintAdvice;
+  }
+
+  if (finding.category === "transaction") {
+    return (
+      frameworkMetadata.transactionDisableHint ??
+      frameworkMetadata.transactionAssumptionReason
+    );
+  }
+
+  if (frameworkMetadata.detectedSignals.length > 0) {
+    return frameworkMetadata.detectedSignals[0];
+  }
+
+  return null;
+}
+
+function findingHasSuggestedSafeRewrite(
+  finding: Finding,
+  recipeGroup: FindingRecipeGroup | null,
+) {
+  return Boolean(recipeGroup || finding.safeRewrite);
+}
+
+function findingHasCopyableSafeRewrite(
+  finding: Finding,
+  recipeGroup: FindingRecipeGroup | null,
+) {
+  return Boolean(
+    recipeGroup?.recipes.some((recipe) => recipe.sqlSnippet) || finding.safeRewrite,
+  );
+}
+
+function getPrimarySafeRewriteSql(
+  finding: Finding,
+  recipeGroup: FindingRecipeGroup | null,
+) {
+  return (
+    recipeGroup?.recipes.find((recipe) => recipe.sqlSnippet)?.sqlSnippet ??
+    finding.safeRewrite?.sql ??
+    null
+  );
+}
+
+function createRecipeMarkdown({
+  recipe,
+  recipeGroup,
+  redactionMode,
+  statement,
 }: {
-  result: AnalysisResult;
-  selectedSample: PostgresMigrationSample | null;
-  settings: PersistedWorkspaceSettings;
-  selectedCategoryFilter: ResultsCategoryFilter;
-  visibleFindings: readonly Finding[];
+  recipe: SafeRewriteRecipe;
+  recipeGroup: FindingRecipeGroup;
+  redactionMode: boolean;
+  statement: AnalysisResult["statements"][number] | null;
 }) {
   const lines = [
-    "# PostgreSQL migration safety review",
+    `### ${recipe.title}`,
     "",
-    `- PostgreSQL version: ${settings.postgresVersion}`,
-    `- Framework preset: ${result.metadata.framework.label}`,
-    `- Transaction assumption: ${result.metadata.framework.transactionAssumptionReason}`,
-    `- Table size profile: ${toHeadingCase(settings.tableSizeProfile)}`,
-    `- Statements analyzed: ${result.summary.totalStatements}`,
-    `- Findings shown: ${visibleFindings.length}`,
-    `- Category filter: ${getCategoryFilterLabel(selectedCategoryFilter)}`,
-    `- Risk score: ${result.summary.risk.score}/100 (${result.summary.risk.label})`,
-    `- Highest lock level: ${result.summary.risk.highestLockLevel ?? "None detected"}`,
-    `- Destructive changes: ${result.summary.risk.destructiveChanges}`,
-    `- Rewrite risks: ${result.summary.risk.rewriteRisks}`,
-    `- Table scans: ${result.summary.risk.tableScans}`,
-    `- Transaction risks: ${result.summary.risk.transactionRisks}`,
-    `- Parser used: ${formatParserLabel(result.metadata.parser.parser)}`,
-    `- postgresVersionUsed: ${result.metadata.postgresVersionUsed}`,
-    `- parserVersionUsed: ${result.metadata.parserVersionUsed ?? "None"}`,
-    `- tableSizeProfile: ${result.metadata.tableSizeProfile}`,
-    `- frameworkPreset: ${result.metadata.frameworkPreset}`,
-    `- rulesRun: ${result.metadata.rulesRun.length}`,
-    `- rulesSkipped: ${result.metadata.rulesSkipped.length}`,
-    `- analysisDurationMs: ${result.metadata.analysisDurationMs}`,
-    `- Runtime: ${formatRuntimeLabel(result.metadata.runtime.mode)}`,
+    recipe.description,
+    "",
+    `- Related finding: ${recipeGroup.title}`,
+    `- Severity: ${toHeadingCase(recipeGroup.severity)}`,
+    `- Category: ${toHeadingCase(recipeGroup.category)}`,
+    `- Statement: ${recipeGroup.statementIndex + 1}`,
   ];
 
-  if (result.metadata.parser.effectiveVersion) {
-    lines.push(
-      `- Parser grammar version: ${result.metadata.parser.effectiveVersion}`,
-    );
+  if (recipeGroup.lineStart && recipeGroup.lineEnd) {
+    lines.push(`- Lines: ${recipeGroup.lineStart}-${recipeGroup.lineEnd}`);
   }
 
-  if (selectedSample) {
-    lines.push(`- Example loaded: ${selectedSample.name}`);
+  if (!redactionMode && recipeGroup.objectName) {
+    lines.push(`- Object: ${recipeGroup.objectName}`);
   }
 
-  if (result.metadata.framework.sourceFilename) {
-    lines.push(`- Source filename: ${result.metadata.framework.sourceFilename}`);
-  }
+  lines.push("", "**Staged steps**", "");
+  recipe.steps.forEach((step, index) => {
+    lines.push(`${index + 1}. ${step}`);
+  });
 
-  if (result.metadata.runtime.fallbackReason) {
-    lines.push(`- Runtime note: ${result.metadata.runtime.fallbackReason}`);
-  }
+  if (recipe.sqlSnippet) {
+    const sqlSnippet = getOutputSqlSnippet(recipe.sqlSnippet, redactionMode);
 
-  if (result.metadata.framework.detectedSignals.length > 0) {
-    lines.push(
-      `- Framework signals: ${result.metadata.framework.detectedSignals.join("; ")}`,
-    );
-  }
-
-  const statementKindEntries = Object.entries(result.metadata.statementKinds).sort(
-    ([leftKind], [rightKind]) => leftKind.localeCompare(rightKind),
-  );
-
-  if (statementKindEntries.length > 0) {
-    lines.push("", "## Statement types", "");
-
-    statementKindEntries.forEach(([kind, count]) => {
-      lines.push(`- ${toHeadingCase(kind)}: ${count}`);
-    });
-  }
-
-  lines.push("", "## Findings", "");
-
-  if (visibleFindings.length === 0) {
-    lines.push("- No findings are visible with the current filters.");
+    lines.push("", "**SQL template**", "", "```sql", ...sqlSnippet.split("\n"), "```");
   } else {
-    visibleFindings.forEach((finding, index) => {
-      const objectName =
-        finding.objectName && !settings.redactionMode
-          ? ` (${finding.objectName})`
-          : "";
+    lines.push(
+      "",
+      "**SQL template**",
+      "",
+      "No automatic SQL snippet is suggested for this recipe.",
+    );
+  }
 
-      lines.push(
-        `${index + 1}. [${finding.severity.toUpperCase()}] ${finding.title}${objectName}`,
-        `   ${finding.summary}`,
-        `   Confidence: ${getConfidenceDetails(finding.confidence).label}`,
-        `   Why it matters: ${finding.whyItMatters}`,
-        `   Recommended action: ${finding.recommendedAction}`,
-      );
+  if (recipe.frameworkSnippet) {
+    lines.push("", "**Framework guidance**", "", recipe.frameworkSnippet);
+  }
 
-      if (finding.safeRewrite) {
-        lines.push(
-          `   Safe rewrite: ${finding.safeRewrite.summary}`,
-          "",
-          "   ```sql",
-          ...finding.safeRewrite.sql.split("\n").map((line) => `   ${line}`),
-          "   ```",
-        );
-      }
-
-      lines.push("");
+  if (recipe.warnings.length > 0) {
+    lines.push("", "**Cautions**", "");
+    recipe.warnings.forEach((warning) => {
+      lines.push(`- ${warning}`);
     });
   }
 
-  if (selectedSample?.expectedTopics.length) {
-    lines.push("## Expected review topics", "");
-    selectedSample.expectedTopics.forEach((topic) => {
-      lines.push(`- ${topic}`);
+  if (statement) {
+    const statementPreview = getOutputSqlSnippet(statement.raw, redactionMode);
+
+    lines.push(
+      "",
+      "**Statement preview**",
+      "",
+      "```sql",
+      ...statementPreview.split("\n"),
+      "```",
+    );
+  }
+
+  if (recipe.docsLinks.length > 0) {
+    lines.push("", "**Docs**", "");
+    recipe.docsLinks.forEach((link) => {
+      lines.push(`- [${link.label}](${link.href})`);
     });
   }
 
-  const parserDiagnostics = [
-    ...result.metadata.parser.errors,
-    ...result.metadata.parser.warnings,
+  return lines.join("\n");
+}
+
+function createAllRecipesMarkdown({
+  recipeGroups,
+  redactionMode,
+  result,
+}: {
+  recipeGroups: readonly FindingRecipeGroup[];
+  redactionMode: boolean;
+  result: AnalysisResult;
+}) {
+  const lines = [
+    "# PostgreSQL migration safe rewrites",
+    "",
+    "Review and adapt these snippets to your schema, traffic, and deployment process.",
   ];
 
-  if (parserDiagnostics.length > 0) {
-    lines.push("", "## Parser diagnostics", "");
-    parserDiagnostics.forEach((diagnostic) => {
-      lines.push(
-        `- [${diagnostic.severity.toUpperCase()}] ${diagnostic.message} (${formatDiagnosticLocation(
-          diagnostic,
-        )})`,
-      );
-    });
+  if (recipeGroups.length === 0) {
+    lines.push("", "No safe rewrite recipes matched the current view.");
+    return lines.join("\n");
   }
 
-  if (result.metadata.limitations.length > 0) {
-    lines.push("", "## What this checker cannot know", "");
-    result.metadata.limitations.forEach((limitation) => {
-      lines.push(`- ${limitation}`);
+  recipeGroups.forEach((recipeGroup) => {
+    const statement =
+      result.statements.find(
+        (candidate) => candidate.index === recipeGroup.statementIndex,
+      ) ?? null;
+
+    lines.push("", `## ${recipeGroup.title}`, "");
+    recipeGroup.recipes.forEach((recipe) => {
+      lines.push(
+        createRecipeMarkdown({
+          recipe,
+          recipeGroup,
+          redactionMode,
+          statement,
+        }),
+        "",
+      );
+    });
+  });
+
+  return lines.join("\n");
+}
+
+function createFindingMarkdown({
+  finding,
+  frameworkNote,
+  recipeGroup,
+  redactionMode,
+  statement,
+}: {
+  finding: Finding;
+  frameworkNote?: string | null;
+  recipeGroup?: FindingRecipeGroup | null;
+  redactionMode: boolean;
+  statement: AnalysisResult["statements"][number] | null;
+}) {
+  const primaryRecipe = recipeGroup?.recipes[0] ?? null;
+  const lines = [
+    `### [${finding.severity.toUpperCase()}] ${finding.title}`,
+    "",
+    finding.summary,
+    "",
+    `- Category: ${toHeadingCase(finding.category)}`,
+    `- Confidence: ${getConfidenceDetails(finding.confidence).label}`,
+    `- Statement: ${finding.statementIndex + 1}`,
+  ];
+
+  if (finding.lineStart && finding.lineEnd) {
+    lines.push(`- Lines: ${finding.lineStart}-${finding.lineEnd}`);
+  }
+
+  if (finding.redactedPreview) {
+    lines.push(`- Redacted preview: \`${finding.redactedPreview}\``);
+  }
+
+  if (!redactionMode && finding.objectName) {
+    lines.push(`- Object: ${finding.objectName}`);
+  }
+
+  if (finding.lockLevel) {
+    lines.push(`- Lock level: ${finding.lockLevel}`);
+  }
+
+  lines.push("", "**Why it matters**", "", finding.whyItMatters);
+  lines.push("", "**Recommended action**", "", finding.recommendedAction);
+
+  if (frameworkNote) {
+    lines.push("", "**Framework note**", "", frameworkNote);
+  }
+
+  if (primaryRecipe) {
+    lines.push("", "**Safe rewrite recipe**", "", primaryRecipe.description, "");
+    primaryRecipe.steps.forEach((step, index) => {
+      lines.push(`${index + 1}. ${step}`);
+    });
+
+    if (primaryRecipe.sqlSnippet) {
+      const sqlSnippet = getOutputSqlSnippet(
+        primaryRecipe.sqlSnippet,
+        redactionMode,
+      );
+
+      lines.push(
+        "",
+        "**SQL template**",
+        "",
+        "```sql",
+        ...sqlSnippet.split("\n"),
+        "```",
+      );
+    }
+  } else if (finding.safeRewrite) {
+    const sqlSnippet = getOutputSqlSnippet(finding.safeRewrite.sql, redactionMode);
+
+    lines.push(
+      "",
+      "**Safe rewrite**",
+      "",
+      finding.safeRewrite.summary,
+      "",
+      "```sql",
+      ...sqlSnippet.split("\n"),
+      "```",
+    );
+  }
+
+  if (statement) {
+    const statementPreview = getOutputSqlSnippet(statement.raw, redactionMode);
+
+    lines.push(
+      "",
+      "**Statement preview**",
+      "",
+      "```sql",
+      ...statementPreview.split("\n"),
+      "```",
+    );
+  }
+
+  if (finding.docsLinks.length > 0) {
+    lines.push("", "**Docs**", "");
+    finding.docsLinks.forEach((link) => {
+      lines.push(`- [${link.label}](${link.href})`);
     });
   }
 
@@ -590,8 +954,18 @@ export function PostgresMigrationCheckerShell() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [statusMessages, setStatusMessages] = useState<StatusMessage[]>([]);
   const [selectedSampleId, setSelectedSampleId] = useState<string | null>(null);
-  const [selectedCategoryFilter, setSelectedCategoryFilter] =
-    useState<ResultsCategoryFilter>("all");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [severityFilter, setSeverityFilter] =
+    useState<FindingsSeverityFilter>("all");
+  const [categoryFilter, setCategoryFilter] =
+    useState<FindingsCategoryFilter>("all");
+  const [showOnlyBlockingRisks, setShowOnlyBlockingRisks] = useState(false);
+  const [showSafeRewritesOnly, setShowSafeRewritesOnly] = useState(false);
+  const [sortMode, setSortMode] = useState<FindingsSortMode>("severity");
+  const [resultsTab, setResultsTab] = useState<ResultsTab>("findings");
+  const [includeSqlSnippetsInReport, setIncludeSqlSnippetsInReport] =
+    useState(false);
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [isExamplesOpen, setIsExamplesOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [lastAnalyzedSql, setLastAnalyzedSql] = useState("");
@@ -604,6 +978,8 @@ export function PostgresMigrationCheckerShell() {
   const fileInputId = useId();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const examplesMenuRef = useRef<HTMLDivElement | null>(null);
+  const findingDetailRef = useRef<HTMLDivElement | null>(null);
+  const shareStateAppliedRef = useRef(false);
   const messageTimeoutsRef = useRef<Map<number, number>>(new Map());
   const statusIdRef = useRef(0);
   const analysisRequestIdRef = useRef(0);
@@ -627,35 +1003,101 @@ export function PostgresMigrationCheckerShell() {
   const activeFrameworkMetadata = activeAnalysisResult?.metadata.framework ?? null;
   const activeResultLimitations =
     activeAnalysisResult?.metadata.limitations ?? [...POSTGRES_ANALYSIS_LIMITATIONS];
-  const visibleFindings = activeAnalysisResult
-    ? getVisibleFindings(
+  const safeRewriteRecipeGroups = activeAnalysisResult?.safeRewriteRecipeGroups ?? [];
+  const safeRewriteGroupsByFindingId = new Map(
+    safeRewriteRecipeGroups.map((group) => [group.findingId, group]),
+  );
+  const baseVisibleFindings = activeAnalysisResult
+    ? getBaseVisibleFindings(
         activeAnalysisResult.findings,
         workspaceSettings.showLowSeverity,
-        selectedCategoryFilter,
       )
     : [];
-  const statementKindEntries = activeAnalysisResult
-    ? Object.entries(activeAnalysisResult.metadata.statementKinds).sort(
-        ([leftKind], [rightKind]) => leftKind.localeCompare(rightKind),
+  const availableFindingCategories = getAvailableFindingCategories(baseVisibleFindings);
+  const filteredFindings = baseVisibleFindings.filter((finding) => {
+    if (severityFilter !== "all" && finding.severity !== severityFilter) {
+      return false;
+    }
+
+    if (categoryFilter !== "all" && finding.category !== categoryFilter) {
+      return false;
+    }
+
+    if (showOnlyBlockingRisks && !isBlockingRiskFinding(finding)) {
+      return false;
+    }
+
+    if (
+      showSafeRewritesOnly &&
+      !findingHasSuggestedSafeRewrite(
+        finding,
+        safeRewriteGroupsByFindingId.get(finding.id) ?? null,
       )
-    : [];
+    ) {
+      return false;
+    }
+
+    return matchesFindingSearch(finding, searchTerm);
+  });
+  const visibleFindings = sortFindings(filteredFindings, sortMode);
+  const visibleFindingIds = new Set(visibleFindings.map((finding) => finding.id));
+  const visibleSafeRewriteRecipeGroups = safeRewriteRecipeGroups.filter((group) =>
+    visibleFindingIds.has(group.findingId),
+  );
   const parserDiagnostics = activeAnalysisResult
     ? [
         ...activeAnalysisResult.metadata.parser.errors,
         ...activeAnalysisResult.metadata.parser.warnings,
       ]
     : [];
-  const severityCounts = countFindingsBySeverity(visibleFindings);
-  const reportText =
+  const selectedFinding =
+    visibleFindings.find((finding) => finding.id === selectedFindingId) ??
+    visibleFindings[0] ??
+    null;
+  const selectedFindingIdForDisplay = selectedFinding?.id ?? null;
+  const selectedStatement =
+    !activeAnalysisResult || !selectedFinding
+      ? null
+      : activeAnalysisResult.statements.find(
+          (statement) => statement.index === selectedFinding.statementIndex,
+        ) ?? null;
+  const selectedRecipeGroup =
+    selectedFinding === null
+      ? null
+      : safeRewriteGroupsByFindingId.get(selectedFinding.id) ?? null;
+  const selectedFrameworkNote = getFrameworkNoteForFinding(
+    selectedFinding,
+    activeFrameworkMetadata,
+  );
+  const reportExportInput =
     activeAnalysisResult === null
-      ? ""
-      : createReportText({
+      ? null
+      : ({
+          findings: visibleFindings,
+          frameworkLabel: activeAnalysisResult.metadata.framework.label,
+          frameworkPreset: workspaceSettings.frameworkPreset,
+          options: {
+            includeSqlSnippets: includeSqlSnippetsInReport,
+            sourceFilename,
+          },
+          parserDiagnostics,
+          postgresVersion: workspaceSettings.postgresVersion,
+          recipeGroups: visibleSafeRewriteRecipeGroups,
           result: activeAnalysisResult,
-          selectedSample,
-          settings: workspaceSettings,
-          selectedCategoryFilter,
-          visibleFindings,
-        });
+          tableSizeProfile: workspaceSettings.tableSizeProfile,
+          viewFilters: {
+            categoryFilter,
+            resultsTab,
+            severityFilter,
+            showLowSeverity: workspaceSettings.showLowSeverity,
+            showOnlyBlockingRisks,
+            showSafeRewritesOnly,
+            sortMode,
+          },
+        } satisfies ReportExportInput);
+  const markdownReportText =
+    reportExportInput === null ? "" : createMarkdownReport(reportExportInput);
+  const reportFilenames = getReportFilenames(sourceFilename);
   const isAnalysisStale =
     activeAnalysisResult !== null &&
     (lastAnalyzedSql.trim() !== sql.trim() ||
@@ -690,6 +1132,65 @@ export function PostgresMigrationCheckerShell() {
       document.removeEventListener("mousedown", handlePointerDown);
     };
   }, [isExamplesOpen]);
+
+  useEffect(() => {
+    if (shareStateAppliedRef.current || typeof window === "undefined") {
+      return;
+    }
+
+    shareStateAppliedRef.current = true;
+    const sharedState = readShareableCheckerStateFromHash();
+
+    if (!sharedState) {
+      return;
+    }
+
+    writePersistedWorkspaceSettings({
+      ...workspaceSettings,
+      ...(sharedState.postgresVersion
+        ? { postgresVersion: sharedState.postgresVersion }
+        : {}),
+      ...(sharedState.frameworkPreset
+        ? { frameworkPreset: sharedState.frameworkPreset }
+        : {}),
+      ...(sharedState.tableSizeProfile
+        ? { tableSizeProfile: sharedState.tableSizeProfile }
+        : {}),
+      ...(typeof sharedState.showLowSeverity === "boolean"
+        ? { showLowSeverity: sharedState.showLowSeverity }
+        : {}),
+    });
+
+    const frameId = window.requestAnimationFrame(() => {
+      if (sharedState.severityFilter) {
+        setSeverityFilter(sharedState.severityFilter);
+      }
+
+      if (sharedState.categoryFilter) {
+        setCategoryFilter(sharedState.categoryFilter);
+      }
+
+      if (typeof sharedState.showOnlyBlockingRisks === "boolean") {
+        setShowOnlyBlockingRisks(sharedState.showOnlyBlockingRisks);
+      }
+
+      if (typeof sharedState.showSafeRewritesOnly === "boolean") {
+        setShowSafeRewritesOnly(sharedState.showSafeRewritesOnly);
+      }
+
+      if (sharedState.sortMode) {
+        setSortMode(sharedState.sortMode);
+      }
+
+      if (sharedState.resultsTab) {
+        setResultsTab(sharedState.resultsTab);
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [workspaceSettings]);
 
   const runAnalysis = useCallback(
     async (
@@ -823,14 +1324,166 @@ export function PostgresMigrationCheckerShell() {
     }
   }
 
-  async function handleCopyReport() {
-    if (!reportText) {
+  async function handleCopyMarkdownReport() {
+    if (!markdownReportText) {
       return;
     }
 
     try {
-      await navigator.clipboard.writeText(reportText);
-      pushStatus("Copied to clipboard");
+      await navigator.clipboard.writeText(markdownReportText);
+      pushStatus("Copied Markdown report");
+    } catch {
+      pushStatus("Could not copy to clipboard. Copy manually instead.", "error");
+    }
+  }
+
+  function handleDownloadMarkdownReport() {
+    if (!reportExportInput) {
+      return;
+    }
+
+    downloadTextFile({
+      content: createMarkdownReport(reportExportInput),
+      filename: reportFilenames.markdown,
+      mimeType: "text/markdown;charset=utf-8",
+    });
+    pushStatus(`Downloaded ${reportFilenames.markdown}`);
+  }
+
+  function handleDownloadHtmlReport() {
+    if (!reportExportInput) {
+      return;
+    }
+
+    downloadTextFile({
+      content: createHtmlReport(reportExportInput),
+      filename: reportFilenames.html,
+      mimeType: "text/html;charset=utf-8",
+    });
+    pushStatus(`Downloaded ${reportFilenames.html}`);
+  }
+
+  function handleDownloadJsonReport() {
+    if (!reportExportInput) {
+      return;
+    }
+
+    downloadTextFile({
+      content: stringifyJsonReport(reportExportInput),
+      filename: reportFilenames.json,
+      mimeType: "application/json;charset=utf-8",
+    });
+    pushStatus(`Downloaded ${reportFilenames.json}`);
+  }
+
+  function handlePrintReport() {
+    if (!reportExportInput) {
+      return;
+    }
+
+    const opened = openPrintReport(createHtmlReport(reportExportInput));
+
+    if (opened) {
+      pushStatus("Opened printable report");
+      return;
+    }
+
+    pushStatus("Could not open print window. Allow pop-ups and try again.", "error");
+  }
+
+  async function handleCopySettingsLink() {
+    const shareLink = buildShareableCheckerLink({
+      categoryFilter,
+      frameworkPreset: workspaceSettings.frameworkPreset,
+      postgresVersion: workspaceSettings.postgresVersion,
+      resultsTab,
+      severityFilter,
+      showLowSeverity: workspaceSettings.showLowSeverity,
+      showOnlyBlockingRisks,
+      showSafeRewritesOnly,
+      sortMode,
+      tableSizeProfile: workspaceSettings.tableSizeProfile,
+    });
+
+    try {
+      await navigator.clipboard.writeText(shareLink);
+      pushStatus("Copied settings link");
+    } catch {
+      pushStatus("Could not copy to clipboard. Copy manually instead.", "error");
+    }
+  }
+
+  async function handleCopyFindingMarkdown(finding: Finding) {
+    const statement =
+      !activeAnalysisResult
+        ? null
+        : activeAnalysisResult.statements.find(
+            (candidate) => candidate.index === finding.statementIndex,
+          ) ?? null;
+    const frameworkNote = getFrameworkNoteForFinding(
+      finding,
+      activeFrameworkMetadata,
+    );
+    const recipeGroup = safeRewriteGroupsByFindingId.get(finding.id) ?? null;
+
+    try {
+      await navigator.clipboard.writeText(
+        createFindingMarkdown({
+          finding,
+          frameworkNote,
+          recipeGroup,
+          redactionMode: workspaceSettings.redactionMode,
+          statement,
+        }),
+      );
+      pushStatus("Copied finding as Markdown");
+    } catch {
+      pushStatus("Could not copy to clipboard. Copy manually instead.", "error");
+    }
+  }
+
+  async function handleCopyRecipeMarkdown(
+    recipeGroup: FindingRecipeGroup,
+    recipe: SafeRewriteRecipe,
+  ) {
+    if (!activeAnalysisResult) {
+      return;
+    }
+
+    const statement =
+      activeAnalysisResult.statements.find(
+        (candidate) => candidate.index === recipeGroup.statementIndex,
+      ) ?? null;
+
+    try {
+      await navigator.clipboard.writeText(
+        createRecipeMarkdown({
+          recipe,
+          recipeGroup,
+          redactionMode: workspaceSettings.redactionMode,
+          statement,
+        }),
+      );
+      pushStatus("Copied recipe as Markdown");
+    } catch {
+      pushStatus("Could not copy to clipboard. Copy manually instead.", "error");
+    }
+  }
+
+  async function handleCopyAllRecipeMarkdown() {
+    if (!activeAnalysisResult) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(
+        createAllRecipesMarkdown({
+          recipeGroups: visibleSafeRewriteRecipeGroups,
+          redactionMode: workspaceSettings.redactionMode,
+          result: activeAnalysisResult,
+        }),
+      );
+      pushStatus("Copied all safe rewrites as Markdown");
     } catch {
       pushStatus("Could not copy to clipboard. Copy manually instead.", "error");
     }
@@ -843,6 +1496,18 @@ export function PostgresMigrationCheckerShell() {
     } catch {
       pushStatus("Could not copy to clipboard. Copy manually instead.", "error");
     }
+  }
+
+  async function handleCopySafeRewriteForFinding(finding: Finding) {
+    const recipeGroup = safeRewriteGroupsByFindingId.get(finding.id) ?? null;
+    const sqlSnippet = getPrimarySafeRewriteSql(finding, recipeGroup);
+
+    if (!sqlSnippet) {
+      pushStatus("No copyable SQL snippet is available for this recipe.", "error");
+      return;
+    }
+
+    await handleCopySqlSnippet(sqlSnippet);
   }
 
   async function handleFileUpload(event: ChangeEvent<HTMLInputElement>) {
@@ -867,11 +1532,25 @@ export function PostgresMigrationCheckerShell() {
     setSql("");
     setSourceFilename(null);
     setSelectedSampleId(null);
+    setSelectedFindingId(null);
     setAnalysisResult(null);
     setLastAnalyzedSql("");
     setLastAnalyzedSourceFilename(null);
     setLastAnalyzedSettingsSignature("");
     pushStatus("Cleared input");
+  }
+
+  function handleSelectFinding(finding: Finding) {
+    setSelectedFindingId(finding.id);
+
+    if (typeof window !== "undefined" && window.innerWidth < 1280) {
+      window.requestAnimationFrame(() => {
+        findingDetailRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
+    }
   }
 
   return (
@@ -1265,542 +1944,237 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
               </div>
 
               <div className="space-y-5 p-6">
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-                  <SummaryMetric
-                    label="Risk score"
-                    value={
-                      activeAnalysisResult
-                        ? `${activeAnalysisResult.summary.risk.score}/100`
-                        : "100/100"
-                    }
-                    detail={
-                      activeAnalysisResult
-                        ? activeAnalysisResult.summary.risk.label
-                        : "Waiting for analysis"
-                    }
+                {sql.trim().length === 0 ? (
+                  <EmptyStateCard
+                    title="Paste SQL, upload a .sql file, or load an example"
+                    body="The editor is ready. Nothing has been analyzed yet, and no raw SQL is being stored for you automatically."
                   />
-                  <SummaryMetric
-                    label="Critical"
-                    value={severityCounts.critical}
+                ) : isAnalyzing ? (
+                  <EmptyStateCard
+                    title="Running local analysis"
+                    body="The checker is reviewing the current SQL in your browser-local workspace."
                   />
-                  <SummaryMetric label="High" value={severityCounts.high} />
-                  <SummaryMetric
-                    label="Statements"
-                    value={activeAnalysisResult?.summary.totalStatements ?? 0}
+                ) : activeAnalysisResult === null ? (
+                  <EmptyStateCard
+                    title="Analysis is ready when you are"
+                    body="Auto analyze is off right now, so use the button below once your migration text is in place."
                   />
-                  <SummaryMetric
-                    label="Parser"
-                    value={
-                      activeAnalysisResult
-                        ? formatParserLabel(activeAnalysisResult.metadata.parser.parser)
-                        : "Waiting"
-                    }
-                    detail={
-                      activeAnalysisResult?.metadata.parser.effectiveVersion
-                        ? `PG ${activeAnalysisResult.metadata.parser.effectiveVersion} grammar`
-                        : undefined
-                    }
-                  />
-                </div>
-
-                {activeAnalysisResult ? (
-                  <div className="grid gap-3">
-                    <Card className="border border-border bg-background px-4 py-4">
-                      <div className="space-y-3">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <p className="text-sm font-medium text-foreground">
-                            Analysis metadata
-                          </p>
-                          <div className="flex flex-wrap gap-2">
-                            <Badge variant="outline">
-                              {formatParserLabel(activeAnalysisResult.metadata.parser.parser)}
-                            </Badge>
-                            <Badge variant="outline">
-                              {formatRuntimeLabel(activeAnalysisResult.metadata.runtime.mode)}
-                            </Badge>
-                          </div>
-                        </div>
-
-                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              postgresVersionUsed
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              PostgreSQL {activeAnalysisResult.metadata.postgresVersionUsed}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              parserVersionUsed
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.metadata.parserVersionUsed
-                                ? `PostgreSQL ${activeAnalysisResult.metadata.parserVersionUsed}`
-                                : "Not used"}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              tableSizeProfile
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {toHeadingCase(activeAnalysisResult.metadata.tableSizeProfile)}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              frameworkPreset
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.metadata.frameworkPreset}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              rulesRun
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.metadata.rulesRun.length}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              rulesSkipped
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.metadata.rulesSkipped.length}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              analysisDurationMs
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {formatAnalysisDuration(
-                                activeAnalysisResult.metadata.analysisDurationMs,
-                              )}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              limitations
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.metadata.limitations.length} known blind spots
-                            </p>
-                          </div>
-                        </div>
-
-                        {activeAnalysisResult.metadata.runtime.fallbackReason ? (
-                          <p className="text-sm leading-7 text-muted-foreground">
-                            {activeAnalysisResult.metadata.runtime.fallbackReason}
-                          </p>
-                        ) : null}
-
-                        {activeAnalysisResult.metadata.rulesSkipped.length > 0 ? (
-                          <p className="text-sm leading-7 text-muted-foreground">
-                            Rules skipped:{" "}
-                            {activeAnalysisResult.metadata.rulesSkipped.join(", ")}
-                          </p>
-                        ) : null}
-                      </div>
-                    </Card>
-
-                    <Card className="border border-border bg-background px-4 py-4">
-                      <div className="space-y-3">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <p className="text-sm font-medium text-foreground">
-                            Risk summary
-                          </p>
-                          <Badge variant="outline">
-                            {activeAnalysisResult.summary.risk.label}
-                          </Badge>
-                        </div>
-
-                        <div className="grid gap-3 sm:grid-cols-3">
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              Score
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.summary.risk.score}/100
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              Rules run
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.metadata.rulesRun.length}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              Tx assumption
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.metadata.transactionContext
-                                .assumeTransaction
-                                ? "Framework wrapped"
-                                : "No wrapper assumed"}
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              Highest lock
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.summary.risk.highestLockLevel ??
-                                "None"}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              Destructive
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.summary.risk.destructiveChanges}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              Rewrites
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.summary.risk.rewriteRisks}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              Table scans
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.summary.risk.tableScans}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                              Tx risks
-                            </p>
-                            <p className="mt-2 text-sm font-medium text-foreground">
-                              {activeAnalysisResult.summary.risk.transactionRisks}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    </Card>
-
-                    <Card className="border border-border bg-background px-4 py-4">
-                      <div className="space-y-3">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <p className="text-sm font-medium text-foreground">
-                            Statement types detected
-                          </p>
-                          <Badge variant="outline">
-                            {activeAnalysisResult.statements.length} statement
-                            {activeAnalysisResult.statements.length === 1 ? "" : "s"}
-                          </Badge>
-                        </div>
-
-                        {statementKindEntries.length === 0 ? (
-                          <p className="text-sm leading-7 text-muted-foreground">
-                            No statements were classified yet.
-                          </p>
-                        ) : (
-                          <div className="space-y-3">
-                            <div className="flex flex-wrap gap-2">
-                              {statementKindEntries.map(([kind, count]) => (
-                                <Badge key={kind} variant="outline">
-                                  {toHeadingCase(kind)} x{count}
-                                </Badge>
-                              ))}
-                            </div>
-
-                            <div className="space-y-2">
-                              {activeAnalysisResult.statements.map((statement) => (
-                                <div
-                                  key={`${statement.index}-${statement.startOffset}`}
-                                  className="rounded-2xl border border-border bg-card px-4 py-3"
-                                >
-                                  <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <p className="text-sm font-medium text-foreground">
-                                      {statement.index + 1}. {toHeadingCase(statement.kind)}
-                                    </p>
-                                    <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                                      Lines {statement.lineStart}-{statement.lineEnd}
-                                    </p>
-                                  </div>
-                                  <p className="mt-2 text-sm leading-7 text-muted-foreground">
-                                    {workspaceSettings.redactionMode
-                                      ? "Target hidden in redaction mode."
-                                      : statement.targetObject
-                                        ? `Target: ${statement.targetObject}`
-                                        : "Target not detected."}
-                                  </p>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </Card>
-
-                    <Card className="border border-border bg-background px-4 py-4">
-                      <div className="space-y-3">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <p className="text-sm font-medium text-foreground">
-                            What this checker cannot know
-                          </p>
-                          <Badge variant="outline">
-                            {activeResultLimitations.length} limits
-                          </Badge>
-                        </div>
-
-                        <p className="text-sm leading-7 text-muted-foreground">
-                          This checker does not connect to your database. It uses SQL text, the selected PostgreSQL version, the framework preset, and an estimated table-size profile only.
-                        </p>
-
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          {activeResultLimitations.map((limitation) => (
-                            <div
-                              key={limitation}
-                              className="rounded-2xl border border-border bg-card px-4 py-3 text-sm leading-7 text-muted-foreground"
-                            >
-                              {limitation}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </Card>
-
-                    <Card className="border border-border bg-background px-4 py-4">
-                      <div className="space-y-3">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <p className="text-sm font-medium text-foreground">
-                            Parser diagnostics
-                          </p>
-                          <Badge variant="outline">
-                            {parserDiagnostics.length} diagnostic
-                            {parserDiagnostics.length === 1 ? "" : "s"}
-                          </Badge>
-                        </div>
-
-                        {parserDiagnostics.length === 0 ? (
-                          <p className="text-sm leading-7 text-muted-foreground">
-                            No parser warnings or errors were reported.
-                          </p>
-                        ) : (
-                          <div className="space-y-2">
-                            {parserDiagnostics.map((diagnostic) => (
-                              <div
-                                key={`${diagnostic.code}-${diagnostic.message}-${diagnostic.startOffset ?? "global"}`}
-                                className="rounded-2xl border border-border bg-card px-4 py-3"
-                              >
-                                <div className="flex flex-wrap items-center justify-between gap-3">
-                                  <p className="text-sm font-medium text-foreground">
-                                    {diagnostic.message}
-                                  </p>
-                                  <Badge variant="outline">
-                                    {diagnostic.severity}
-                                  </Badge>
-                                </div>
-                                <p className="mt-2 text-sm leading-7 text-muted-foreground">
-                                  {formatDiagnosticLocation(diagnostic)} / {diagnostic.source}
-                                </p>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </Card>
-                  </div>
-                ) : null}
-
-                <div className="space-y-3">
-                  {activeAnalysisResult ? (
-                    <div className="flex flex-wrap gap-2">
-                      {RESULTS_CATEGORY_FILTER_OPTIONS.map((option) => (
-                        <Button
-                          key={option.value}
-                          type="button"
-                          size="sm"
-                          variant={
-                            selectedCategoryFilter === option.value
-                              ? "primary"
-                              : "secondary"
-                          }
-                          onClick={() => {
-                            setSelectedCategoryFilter(option.value);
-                          }}
-                        >
-                          {option.label}
-                        </Button>
-                      ))}
+                ) : (
+                  <>
+                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+                      <RiskScoreCard result={activeAnalysisResult} />
+                      <RiskSummary result={activeAnalysisResult} />
                     </div>
-                  ) : null}
 
-                  {sql.trim().length === 0 ? (
-                    <EmptyStateCard
-                      title="Paste SQL, upload a .sql file, or load an example"
-                      body="The editor is ready. Nothing has been analyzed yet, and no raw SQL is being stored for you automatically."
+                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+                      <AnalysisMetadataPanel
+                        parserDiagnostics={parserDiagnostics}
+                        result={activeAnalysisResult}
+                      />
+                      <LimitationsPanel
+                        limitations={activeResultLimitations}
+                        tableSizeProfile={workspaceSettings.tableSizeProfile}
+                      />
+                    </div>
+
+                    <FindingsToolbar
+                      availableCategories={availableFindingCategories}
+                      categoryFilter={categoryFilter}
+                      filteredCount={visibleFindings.length}
+                      searchTerm={searchTerm}
+                      severityFilter={severityFilter}
+                      showOnlyBlockingRisks={showOnlyBlockingRisks}
+                      showSafeRewritesOnly={showSafeRewritesOnly}
+                      sortMode={sortMode}
+                      totalCount={baseVisibleFindings.length}
+                      onCategoryFilterChange={setCategoryFilter}
+                      onSearchTermChange={setSearchTerm}
+                      onSeverityFilterChange={setSeverityFilter}
+                      onShowOnlyBlockingRisksChange={setShowOnlyBlockingRisks}
+                      onShowSafeRewritesOnlyChange={setShowSafeRewritesOnly}
+                      onSortModeChange={setSortMode}
                     />
-                  ) : isAnalyzing ? (
-                    <EmptyStateCard
-                      title="Running local analysis"
-                      body="The checker is reviewing the current SQL in your browser-local workspace."
-                    />
-                  ) : activeAnalysisResult === null ? (
-                    <EmptyStateCard
-                      title="Analysis is ready when you are"
-                      body="Auto analyze is off right now, so use the button below once your migration text is in place."
-                    />
-                  ) : (
-                    <>
-                      {visibleFindings.length === 0 ? (
-                        <EmptyStateCard
-                          title="No visible findings with the current filters"
-                          body="Statement mapping and parser diagnostics are still available above even when there are no rule findings."
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setResultsTab("findings");
+                        }}
+                        className={`inline-flex items-center rounded-full border px-4 py-2 text-sm font-medium transition ${
+                          resultsTab === "findings"
+                            ? "border-foreground/20 bg-card text-foreground"
+                            : "border-border bg-background text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        Findings
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setResultsTab("safe-rewrites");
+                        }}
+                        className={`inline-flex items-center rounded-full border px-4 py-2 text-sm font-medium transition ${
+                          resultsTab === "safe-rewrites"
+                            ? "border-foreground/20 bg-card text-foreground"
+                            : "border-border bg-background text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        Safe rewrites
+                      </button>
+                    </div>
+
+                    {resultsTab === "findings" ? (
+                      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] xl:items-start">
+                        <FindingsList
+                          canCopySafeRewrite={(finding) =>
+                            findingHasCopyableSafeRewrite(
+                              finding,
+                              safeRewriteGroupsByFindingId.get(finding.id) ?? null,
+                            )
+                          }
+                          findings={visibleFindings}
+                          totalFindings={baseVisibleFindings.length}
+                          selectedFindingId={selectedFindingIdForDisplay}
+                          onCopySafeRewrite={(finding) => {
+                            void handleCopySafeRewriteForFinding(finding);
+                          }}
+                          onSelectFinding={handleSelectFinding}
                         />
-                      ) : (
-                        visibleFindings.map((finding) => {
-                          const confidenceDetails = getConfidenceDetails(
-                            finding.confidence,
-                          );
 
-                          return (
-                            <Card
-                              key={finding.id}
-                              className="border border-border bg-background px-4 py-4"
-                            >
-                              <div className="space-y-3">
-                                <div className="flex flex-wrap items-center justify-between gap-3">
-                                  <div className="space-y-1">
-                                    <p className="text-sm font-medium text-foreground">
-                                      {finding.title}
-                                    </p>
-                                    <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                                      {finding.category} / {finding.severity}
-                                    </p>
-                                  </div>
-                                  <div className="flex flex-wrap gap-2">
-                                    <Badge
-                                      variant="outline"
-                                      title={confidenceDetails.tooltip}
-                                    >
-                                      {confidenceDetails.label}
-                                    </Badge>
-                                    {finding.lockLevel ? (
-                                      <Badge variant="outline">{finding.lockLevel}</Badge>
-                                    ) : null}
-                                  </div>
-                                </div>
+                        <div ref={findingDetailRef}>
+                          <FindingDetail
+                            finding={selectedFinding}
+                            frameworkMetadata={activeFrameworkMetadata}
+                            frameworkNote={selectedFrameworkNote}
+                            onCopyFindingMarkdown={(finding) => {
+                              void handleCopyFindingMarkdown(finding);
+                            }}
+                            onCopySafeRewrite={(finding) => {
+                              void handleCopySafeRewriteForFinding(finding);
+                            }}
+                            recipeGroup={selectedRecipeGroup}
+                            statement={selectedStatement}
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <SafeRewritePanel
+                        recipeGroups={visibleSafeRewriteRecipeGroups}
+                        totalGroups={safeRewriteRecipeGroups.length}
+                        onCopyAllMarkdown={() => {
+                          void handleCopyAllRecipeMarkdown();
+                        }}
+                        onCopyRecipeMarkdown={(recipeGroup, recipe) => {
+                          void handleCopyRecipeMarkdown(recipeGroup, recipe);
+                        }}
+                        onCopySqlSnippet={(recipe) => {
+                          if (!recipe.sqlSnippet) {
+                            return;
+                          }
 
-                                <p className="text-sm leading-7 text-muted-foreground">
-                                  {finding.summary}
-                                </p>
+                          void handleCopySqlSnippet(recipe.sqlSnippet);
+                        }}
+                      />
+                    )}
+                  </>
+                )}
 
-                                <div className="space-y-2 text-sm leading-7 text-muted-foreground">
-                                  <p>
-                                    <span className="font-medium text-foreground">
-                                      Why it matters:
-                                    </span>{" "}
-                                    {finding.whyItMatters}
-                                  </p>
-                                  <p>
-                                    <span className="font-medium text-foreground">
-                                      Recommended action:
-                                    </span>{" "}
-                                    {finding.recommendedAction}
-                                  </p>
-                                </div>
+                <div className="space-y-4 rounded-3xl border border-border bg-background px-4 py-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-foreground">
+                        Report export
+                      </p>
+                      <p className="text-sm leading-7 text-muted-foreground">
+                        Copy, download, print, or share review settings without
+                        placing your migration SQL into the URL.
+                      </p>
+                    </div>
 
-                                {finding.lockInfo ? (
-                                  <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm leading-7 text-muted-foreground">
-                                    <p>
-                                      <span className="font-medium text-foreground">
-                                        Lock behavior:
-                                      </span>{" "}
-                                      {finding.lockInfo.description}
-                                    </p>
-                                    <p>
-                                      <span className="font-medium text-foreground">
-                                        Read/write impact:
-                                      </span>{" "}
-                                      {finding.lockInfo.blocksReads
-                                        ? "Blocks reads"
-                                        : "Allows reads"}{" "}
-                                      and{" "}
-                                      {finding.lockInfo.blocksWrites
-                                        ? "blocks writes"
-                                        : "allows writes"}.
-                                    </p>
-                                  </div>
-                                ) : null}
+                    <label className="flex items-start gap-3 rounded-2xl border border-border bg-card px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={includeSqlSnippetsInReport}
+                        onChange={(event) => {
+                          setIncludeSqlSnippetsInReport(event.target.checked);
+                        }}
+                        className="mt-1 size-4 rounded border-border text-foreground"
+                      />
+                      <span className="space-y-1">
+                        <span className="block text-sm font-medium text-foreground">
+                          Include SQL snippets in report
+                        </span>
+                        <span className="block text-sm leading-6 text-muted-foreground">
+                          Off by default so exports stay safer to share.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
 
-                                {finding.safeRewrite ? (
-                                  <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                                    <div className="space-y-3">
-                                      <div className="flex flex-wrap items-start justify-between gap-3">
-                                        <div>
-                                          <p className="text-sm font-medium text-foreground">
-                                            {finding.safeRewrite.title}
-                                          </p>
-                                          <p className="mt-1 text-sm leading-7 text-muted-foreground">
-                                            {finding.safeRewrite.summary}
-                                          </p>
-                                        </div>
-                                        <Button
-                                          type="button"
-                                          size="sm"
-                                          variant="secondary"
-                                          onClick={() => {
-                                            void handleCopySqlSnippet(
-                                              finding.safeRewrite!.sql,
-                                            );
-                                          }}
-                                        >
-                                          Copy SQL
-                                        </Button>
-                                      </div>
-                                      <pre className="overflow-x-auto rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-6 text-foreground">
-                                        <code>{finding.safeRewrite.sql}</code>
-                                      </pre>
-                                    </div>
-                                  </div>
-                                ) : null}
-                              </div>
-                            </Card>
-                          );
-                        })
-                      )}
-                    </>
-                  )}
-                </div>
-
-                <div className="flex flex-wrap gap-3">
-                  <Button
-                    type="button"
-                    onClick={() => {
-                      void runAnalysis(sql, workspaceSettings, sourceFilename);
-                    }}
-                    disabled={sql.trim().length === 0 || isAnalyzing}
-                  >
-                    {isAnalyzing ? "Analyzing..." : "Run local analysis"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={() => {
-                      void handleCopyReport();
-                    }}
-                    disabled={reportText.length === 0}
-                  >
-                    Copy PR report
-                  </Button>
+                  <div className="flex flex-wrap gap-3">
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        void runAnalysis(sql, workspaceSettings, sourceFilename);
+                      }}
+                      disabled={sql.trim().length === 0 || isAnalyzing}
+                    >
+                      {isAnalyzing ? "Analyzing..." : "Run local analysis"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => {
+                        void handleCopyMarkdownReport();
+                      }}
+                      disabled={markdownReportText.length === 0}
+                    >
+                      Copy Markdown report
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={handleDownloadMarkdownReport}
+                      disabled={reportExportInput === null}
+                    >
+                      Download Markdown
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={handleDownloadHtmlReport}
+                      disabled={reportExportInput === null}
+                    >
+                      Download HTML
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={handleDownloadJsonReport}
+                      disabled={reportExportInput === null}
+                    >
+                      Download JSON
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={handlePrintReport}
+                      disabled={reportExportInput === null}
+                    >
+                      Print report
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      title="For privacy, links never include your migration SQL."
+                      onClick={() => {
+                        void handleCopySettingsLink();
+                      }}
+                    >
+                      Copy settings link
+                    </Button>
+                  </div>
                 </div>
               </div>
             </Card>
@@ -2123,28 +2497,6 @@ function SettingToggle({
         </span>
       </span>
     </label>
-  );
-}
-
-function SummaryMetric({
-  detail,
-  label,
-  value,
-}: {
-  detail?: string;
-  label: string;
-  value: ReactNode;
-}) {
-  return (
-    <div className="rounded-2xl border border-border bg-background px-4 py-4">
-      <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-        {label}
-      </p>
-      <p className="mt-2 text-2xl font-semibold text-foreground">{value}</p>
-      {detail ? (
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">{detail}</p>
-      ) : null}
-    </div>
   );
 }
 

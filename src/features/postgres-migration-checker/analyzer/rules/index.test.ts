@@ -376,6 +376,7 @@ CREATE INDEX CONCURRENTLY index_users_on_email ON users (email);`,
         "Database extensions and exact function volatility",
       ]),
     );
+    expect(result.safeRewriteRecipeGroups.length).toBeGreaterThan(0);
   });
 
   it("marks heuristic advisory findings with lower confidence", async () => {
@@ -386,5 +387,50 @@ CREATE INDEX CONCURRENTLY index_users_on_email ON users (email);`,
     expect(
       getFinding(result, "PGM038_CREATE_TABLE_AS_SELECT").confidence,
     ).toBe("low");
+  });
+
+  it("builds structured safe rewrite recipes for common risky patterns", async () => {
+    const sql = `ALTER TABLE users ADD COLUMN status text NOT NULL DEFAULT 'active';
+CREATE INDEX index_users_on_email ON users (email);
+ALTER TABLE orders
+  ADD CONSTRAINT orders_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id);
+ALTER TABLE users
+  ADD CONSTRAINT users_email_key UNIQUE (email);
+ALTER TABLE users ALTER COLUMN status TYPE bigint USING status::bigint;
+ALTER TABLE users RENAME COLUMN nickname TO display_name;
+UPDATE users SET normalized_email = lower(email);
+DROP TABLE legacy_users;`;
+    const result = await analyze(sql);
+
+    expect(result.safeRewriteRecipeGroups.map((group) => group.ruleId)).toEqual(
+      expect.arrayContaining([
+        "PGM001_DROP_TABLE",
+        "PGM013_ALTER_COLUMN_TYPE_REWRITE",
+        "PGM015_ADD_COLUMN_NOT_NULL_IMMEDIATE",
+        "PGM016_ADD_COLUMN_WITH_DEFAULT_VERSION_AWARE",
+        "PGM020_CREATE_INDEX_WITHOUT_CONCURRENTLY",
+        "PGM023_ADD_FOREIGN_KEY_WITHOUT_NOT_VALID",
+        "PGM026_ADD_UNIQUE_OR_PRIMARY_KEY_DIRECTLY",
+        "PGM030_LONG_RUNNING_BACKFILL_IN_MIGRATION",
+      ]),
+    );
+
+    const indexRecipeGroup = result.safeRewriteRecipeGroups.find(
+      (group) => group.ruleId === "PGM020_CREATE_INDEX_WITHOUT_CONCURRENTLY",
+    );
+    const destructiveRecipeGroup = result.safeRewriteRecipeGroups.find(
+      (group) => group.ruleId === "PGM001_DROP_TABLE",
+    );
+
+    expect(indexRecipeGroup?.recipes[0]?.sqlSnippet).toContain(
+      "CREATE INDEX CONCURRENTLY IF NOT EXISTS",
+    );
+    expect(destructiveRecipeGroup?.recipes[0]?.sqlSnippet).toBeNull();
+    expect(destructiveRecipeGroup?.recipes[0]?.steps).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Confirm the application no longer reads or writes"),
+        "Create a backup or restore point that matches your recovery expectations.",
+      ]),
+    );
   });
 });
