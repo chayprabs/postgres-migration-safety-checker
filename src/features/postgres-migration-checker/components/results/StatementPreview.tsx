@@ -34,6 +34,7 @@ export function StatementPreview({
   const displaySql = redactionMode
     ? redactSecretsInText(statement.raw)
     : statement.raw;
+  const hasStoredStatementSql = displaySql.trim().length > 0;
   const lines = displaySql.split("\n");
   const hasRedactions = displaySql !== statement.raw;
 
@@ -44,8 +45,8 @@ export function StatementPreview({
           <div className="space-y-1">
             <p className="text-sm font-medium text-foreground">Statement preview</p>
             <p className="text-sm leading-7 text-muted-foreground">
-              Statement {statement.index + 1} · lines {statement.lineStart}-
-              {statement.lineEnd} · {toHeadingCase(statement.kind)}
+              Statement {statement.index + 1} - lines {statement.lineStart}-
+              {statement.lineEnd} - {toHeadingCase(statement.kind)}
             </p>
             {hasRedactions ? (
               <p className="text-sm leading-7 text-muted-foreground">
@@ -58,23 +59,33 @@ export function StatementPreview({
           </span>
         </div>
 
-        <div className="overflow-x-auto rounded-2xl border border-border bg-card">
-          <div className="min-w-full font-mono text-xs leading-6 text-foreground">
-            {lines.map((line, index) => (
-              <div
-                key={`${statement.startOffset}-${statement.lineStart + index}`}
-                className="grid grid-cols-[auto_1fr] gap-4 border-b border-border/60 px-4 py-1.5 last:border-b-0"
-              >
-                <span className="select-none text-right text-muted-foreground">
-                  {statement.lineStart + index}
-                </span>
-                <span className="whitespace-pre-wrap break-words">
-                  {line.length > 0 ? line : " "}
-                </span>
-              </div>
-            ))}
+        {hasStoredStatementSql ? (
+          <div
+            aria-label="Statement SQL preview"
+            className="overflow-x-auto rounded-2xl border border-border bg-card"
+          >
+            <div className="min-w-full font-mono text-xs leading-6 text-foreground">
+              {lines.map((line, index) => (
+                <div
+                  key={`${statement.startOffset}-${statement.lineStart + index}`}
+                  className="grid grid-cols-[auto_1fr] gap-4 border-b border-border/60 px-4 py-1.5 last:border-b-0"
+                >
+                  <span className="select-none text-right text-muted-foreground">
+                    {statement.lineStart + index}
+                  </span>
+                  <span className="whitespace-pre-wrap break-words">
+                    {line.length > 0 ? line : " "}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm leading-7 text-muted-foreground">
+            SQL was not stored for this saved summary, so this statement preview
+            is unavailable.
+          </div>
+        )}
       </div>
     </Card>
   );

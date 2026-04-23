@@ -5,21 +5,32 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useEffectEvent,
   useId,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode, RefObject } from "react";
 import { ShieldCheck, Upload } from "lucide-react";
 import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { CodeEditor } from "@/components/code/CodeEditor";
 import {
+  readAnalyticsDebugEvents,
+  subscribeAnalyticsDebugEvents,
   trackAnalysisCompleted,
+  trackAnalysisFailed,
+  trackLocalSaveOpened,
+  trackLocalSaveSaved,
+  trackRedactionModeEnabled,
   trackReportCopied,
+  trackReportExported,
+  trackSampleLoaded,
+  trackSettingsLinkCopied,
   trackToolOpened,
+  type AnalyticsDebugEvent,
   type AnalyticsSettingsSummary,
 } from "@/lib/analytics";
 import {
@@ -49,6 +60,14 @@ import {
   type TransactionAssumptionMode,
 } from "@/features/postgres-migration-checker";
 import { redactSecretsInText } from "../analyzer/security/secretDetection";
+import {
+  clearSavedLocalHistory,
+  deleteSavedLocalAnalysis,
+  readSavedLocalAnalyses,
+  saveLocalAnalysis,
+  subscribeSavedLocalAnalyses,
+} from "../history/localHistory";
+import type { SavedLocalAnalysis } from "../history/types";
 import { analyzeInWorkerOrMainThread } from "../analyzer/worker/client";
 import {
   AnalysisMetadata as AnalysisMetadataPanel,
@@ -72,6 +91,11 @@ import {
   openPrintReport,
 } from "../reports/download";
 import type { ReportExportInput } from "../reports/types";
+import {
+  LOAD_POSTGRES_MIGRATION_SAMPLE_EVENT,
+  type LoadPostgresMigrationSampleDetail,
+} from "../workspaceEvents";
+import { cn } from "@/lib/utils";
 
 type PersistedWorkspaceSettings = {
   autoAnalyze: boolean;
@@ -88,6 +112,27 @@ type StatusMessage = {
   id: number;
   message: string;
   tone: StatusTone;
+};
+
+type SaveDialogState = {
+  title: string;
+};
+
+type CommandMenuCommand = {
+  description: string;
+  disabled?: boolean;
+  disabledReason?: string;
+  id: string;
+  keywords?: readonly string[];
+  label: string;
+  onSelect: () => void;
+  shortcut?: string;
+};
+
+type ShortcutHelpItem = {
+  action: string;
+  keys: string;
+  note: string;
 };
 
 type FrameworkNotesCardProps = {
@@ -167,6 +212,49 @@ const RESULTS_TAB_VALUES = [
   "findings",
   "safe-rewrites",
 ] as const satisfies readonly ResultsTab[];
+
+const DEFAULT_SAFE_SAMPLE_ID = "foreign-key-not-valid";
+const SHORTCUT_LABELS = {
+  analyze: "Cmd/Ctrl + Enter",
+  commandMenu: "Cmd/Ctrl + K",
+  copyMarkdownReport: "Cmd/Ctrl + Shift + C",
+  escape: "Esc",
+  findingsSearch: "/",
+  loadUnsafeExample: "Cmd/Ctrl + Shift + L",
+} as const;
+
+const SHORTCUT_HELP_ITEMS: readonly ShortcutHelpItem[] = [
+  {
+    keys: SHORTCUT_LABELS.analyze,
+    action: "Analyze now",
+    note: "Run the checker immediately from anywhere on this tool page.",
+  },
+  {
+    keys: SHORTCUT_LABELS.commandMenu,
+    action: "Open command menu",
+    note: "Jump straight to common actions without leaving the keyboard.",
+  },
+  {
+    keys: SHORTCUT_LABELS.copyMarkdownReport,
+    action: "Copy Markdown report",
+    note: "Copies the report when an analysis result is available.",
+  },
+  {
+    keys: SHORTCUT_LABELS.loadUnsafeExample,
+    action: "Load unsafe example",
+    note: "Loads the default risky migration example into the editor.",
+  },
+  {
+    keys: SHORTCUT_LABELS.escape,
+    action: "Close dialogs and menus",
+    note: "Dismisses open overlays, drawers, and popovers.",
+  },
+  {
+    keys: SHORTCUT_LABELS.findingsSearch,
+    action: "Focus findings search",
+    note: "Moves focus to findings search when you are not typing in the editor.",
+  },
+] as const;
 
 const TABLE_SIZE_PROFILE_OPTIONS: ReadonlyArray<{
   description: string;
@@ -504,20 +592,79 @@ function buildAnalysisSettings(
 
 function buildAnalyticsSettingsSummary(
   settings: PersistedWorkspaceSettings,
-  transactionAssumptionMode: TransactionAssumptionMode,
 ): AnalyticsSettingsSummary {
   return {
     postgresVersion: settings.postgresVersion,
     frameworkPreset: settings.frameworkPreset,
     tableSizeProfile: settings.tableSizeProfile,
     redactionMode: settings.redactionMode,
-    autoAnalyze: settings.autoAnalyze,
-    transactionAssumptionMode,
   };
 }
 
 function getOutputSqlSnippet(sqlSnippet: string, redactionMode: boolean) {
   return redactionMode ? redactSecretsInText(sqlSnippet) : sqlSnippet;
+}
+
+function isEditableShortcutTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return Boolean(
+    target.closest(
+      'input, textarea, select, [contenteditable="true"], .cm-editor, .cm-content',
+    ),
+  );
+}
+
+function scrollElementIntoView(element: HTMLElement | null) {
+  if (!element || typeof window === "undefined") {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    element.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
+}
+
+function formatSavedAnalysisTimestamp(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function getSavedAnalysisModeLabel(saveMode: SavedLocalAnalysis["saveMode"]) {
+  return saveMode === "with-sql" ? "Saved with SQL" : "Summary only";
+}
+
+function getSuggestedSavedAnalysisTitle(
+  result: AnalysisResult | null,
+  sql: string,
+  sourceFilename: string | null,
+) {
+  if (sourceFilename) {
+    return sourceFilename.replace(/\.[^.]+$/, "");
+  }
+
+  const firstStatement = result?.statements[0];
+
+  if (firstStatement?.targetObject) {
+    return `${firstStatement.kind} ${firstStatement.targetObject}`;
+  }
+
+  const firstMeaningfulLine =
+    sql
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0 && !line.startsWith("--")) ?? "";
+
+  return firstMeaningfulLine.length > 0
+    ? firstMeaningfulLine.replace(/\s+/g, " ").slice(0, 72)
+    : "Migration review";
 }
 
 function getBaseVisibleFindings(
@@ -942,16 +1089,39 @@ function createFindingMarkdown({
 }
 
 export function PostgresMigrationCheckerShell() {
+  const isDevelopment = process.env.NODE_ENV === "development";
   const workspaceSettings = useSyncExternalStore(
     subscribeWorkspaceSettings,
     readPersistedWorkspaceSettings,
     createDefaultWorkspaceSettings,
+  );
+  const savedLocalAnalyses = useSyncExternalStore(
+    subscribeSavedLocalAnalyses,
+    readSavedLocalAnalyses,
+    readSavedLocalAnalyses,
+  );
+  const analyticsDebugEvents = useSyncExternalStore(
+    subscribeAnalyticsDebugEvents,
+    readAnalyticsDebugEvents,
+    readAnalyticsDebugEvents,
   );
   const [sql, setSql] = useState("");
   const [sourceFilename, setSourceFilename] = useState<string | null>(null);
   const [transactionAssumptionMode, setTransactionAssumptionMode] =
     useState<TransactionAssumptionMode>("auto");
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [openedSavedAnalysisId, setOpenedSavedAnalysisId] = useState<string | null>(
+    null,
+  );
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isPrivacyExplanationOpen, setIsPrivacyExplanationOpen] = useState(false);
+  const [saveDialogState, setSaveDialogState] = useState<SaveDialogState | null>(
+    null,
+  );
+  const [isCommandMenuOpen, setIsCommandMenuOpen] = useState(false);
+  const [commandMenuQuery, setCommandMenuQuery] = useState("");
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+  const [isSavedHistoryOpen, setIsSavedHistoryOpen] = useState(false);
   const [statusMessages, setStatusMessages] = useState<StatusMessage[]>([]);
   const [selectedSampleId, setSelectedSampleId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -976,13 +1146,36 @@ export function PostgresMigrationCheckerShell() {
     useState("");
   const deferredSql = useDeferredValue(sql);
   const fileInputId = useId();
+  const findingsSearchInputId = useId();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const settingsSectionRef = useRef<HTMLDivElement | null>(null);
+  const migrationInputSectionRef = useRef<HTMLDivElement | null>(null);
+  const privacyBannerRef = useRef<HTMLDivElement | null>(null);
   const examplesMenuRef = useRef<HTMLDivElement | null>(null);
+  const findingsSearchInputRef = useRef<HTMLInputElement | null>(null);
   const findingDetailRef = useRef<HTMLDivElement | null>(null);
   const shareStateAppliedRef = useRef(false);
   const messageTimeoutsRef = useRef<Map<number, number>>(new Map());
   const statusIdRef = useRef(0);
   const analysisRequestIdRef = useRef(0);
+  const toolOpenTrackedRef = useRef(false);
+  const onExternalSampleLoad = useEffectEvent(
+    (detail: LoadPostgresMigrationSampleDetail) => {
+      const sample = getPostgresMigrationSample(detail.sampleId);
+
+      if (!sample) {
+        return;
+      }
+
+      loadSampleIntoWorkspace(sample);
+    },
+  );
+  const openedSavedAnalysis =
+    openedSavedAnalysisId === null
+      ? null
+      : savedLocalAnalyses.find(
+          (savedAnalysis) => savedAnalysis.id === openedSavedAnalysisId,
+        ) ?? null;
   const selectedSample =
     selectedSampleId === null ? null : getPostgresMigrationSample(selectedSampleId);
   const featuredSample =
@@ -999,7 +1192,11 @@ export function PostgresMigrationCheckerShell() {
     transactionAssumptionMode,
     sourceFilename,
   );
-  const activeAnalysisResult = sql.trim().length === 0 ? null : analysisResult;
+  const redactedSql = getOutputSqlSnippet(sql, true);
+  const hasRedactedCopy = redactedSql !== sql;
+  const isViewingSavedAnalysis = openedSavedAnalysis !== null;
+  const activeAnalysisResult =
+    sql.trim().length === 0 && !isViewingSavedAnalysis ? null : analysisResult;
   const activeFrameworkMetadata = activeAnalysisResult?.metadata.framework ?? null;
   const activeResultLimitations =
     activeAnalysisResult?.metadata.limitations ?? [...POSTGRES_ANALYSIS_LIMITATIONS];
@@ -1078,6 +1275,7 @@ export function PostgresMigrationCheckerShell() {
           frameworkPreset: workspaceSettings.frameworkPreset,
           options: {
             includeSqlSnippets: includeSqlSnippetsInReport,
+            redactionMode: workspaceSettings.redactionMode,
             sourceFilename,
           },
           parserDiagnostics,
@@ -1099,10 +1297,28 @@ export function PostgresMigrationCheckerShell() {
     reportExportInput === null ? "" : createMarkdownReport(reportExportInput);
   const reportFilenames = getReportFilenames(sourceFilename);
   const isAnalysisStale =
+    !isViewingSavedAnalysis &&
     activeAnalysisResult !== null &&
     (lastAnalyzedSql.trim() !== sql.trim() ||
       lastAnalyzedSourceFilename !== sourceFilename ||
       lastAnalyzedSettingsSignature !== currentSettingsSignature);
+  const sampleUsed = selectedSampleId !== null;
+  const canSaveLocally = activeAnalysisResult !== null;
+  const parserUsedFallback =
+    activeAnalysisResult?.metadata.parser.parser === "fallback";
+  const hasTransientUiOpen =
+    isCommandMenuOpen ||
+    isExamplesOpen ||
+    isPrivacyExplanationOpen ||
+    isSavedHistoryOpen ||
+    isSettingsOpen ||
+    isShortcutsOpen ||
+    saveDialogState !== null;
+  const saveDialogSuggestedTitle = getSuggestedSavedAnalysisTitle(
+    activeAnalysisResult,
+    sql,
+    sourceFilename,
+  );
 
   useEffect(() => {
     const activeTimeouts = messageTimeoutsRef.current;
@@ -1113,6 +1329,15 @@ export function PostgresMigrationCheckerShell() {
       });
       activeTimeouts.clear();
     };
+  }, []);
+
+  useEffect(() => {
+    if (toolOpenTrackedRef.current) {
+      return;
+    }
+
+    toolOpenTrackedRef.current = true;
+    trackToolOpened(TOOL_ID);
   }, []);
 
   useEffect(() => {
@@ -1192,11 +1417,37 @@ export function PostgresMigrationCheckerShell() {
     };
   }, [workspaceSettings]);
 
+  const dismissStatus = useCallback((id: number) => {
+    const timeoutId = messageTimeoutsRef.current.get(id);
+
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+      messageTimeoutsRef.current.delete(id);
+    }
+
+    setStatusMessages((current) => current.filter((message) => message.id !== id));
+  }, []);
+
+  const pushStatus = useCallback((message: string, tone: StatusTone = "default") => {
+    const id = statusIdRef.current + 1;
+    statusIdRef.current = id;
+    const timeoutId = window.setTimeout(() => {
+      dismissStatus(id);
+    }, STATUS_MESSAGE_TTL_MS);
+
+    messageTimeoutsRef.current.set(id, timeoutId);
+
+    setStatusMessages((current) =>
+      [{ id, message, tone }, ...current].slice(0, 3),
+    );
+  }, [dismissStatus]);
+
   const runAnalysis = useCallback(
     async (
       sqlToAnalyze: string,
       settingsToUse: PersistedWorkspaceSettings,
       nextSourceFilename: string | null,
+      usedSample: boolean,
     ) => {
       const trimmedSql = sqlToAnalyze.trim();
 
@@ -1226,6 +1477,21 @@ export function PostgresMigrationCheckerShell() {
           return;
         }
 
+        trackAnalysisCompleted({
+          toolId: TOOL_ID,
+          inputLength: sqlToAnalyze.length,
+          statementCount: result.statements.length,
+          findingCount: result.findings.length,
+          severityCounts: result.summary.bySeverity,
+          categoriesPresent: [
+            ...new Set(result.findings.map((finding) => finding.category)),
+          ],
+          durationMs: result.metadata.analysisDurationMs,
+          parserUsed: result.metadata.parser.parser,
+          sampleUsed: usedSample,
+          settingsSummary: buildAnalyticsSettingsSummary(settingsToUse),
+        });
+
         startTransition(() => {
           setAnalysisResult(result);
           setLastAnalyzedSql(sqlToAnalyze);
@@ -1238,13 +1504,28 @@ export function PostgresMigrationCheckerShell() {
             ),
           );
         });
+      } catch {
+        trackAnalysisFailed({
+          toolId: TOOL_ID,
+          inputLength: sqlToAnalyze.length,
+          sampleUsed: usedSample,
+          settingsSummary: buildAnalyticsSettingsSummary(settingsToUse),
+        });
+        setAnalysisResult(null);
+        pushStatus(
+          "Analysis failed before a safe result could be generated. Try adjusting the SQL or settings.",
+          "error",
+        );
+        setLastAnalyzedSql("");
+        setLastAnalyzedSourceFilename(null);
+        setLastAnalyzedSettingsSignature("");
       } finally {
         if (analysisRequestIdRef.current === requestId) {
           setIsAnalyzing(false);
         }
       }
     },
-    [transactionAssumptionMode],
+    [pushStatus, transactionAssumptionMode],
   );
 
   useEffect(() => {
@@ -1253,38 +1534,126 @@ export function PostgresMigrationCheckerShell() {
     }
 
     const timeoutId = window.setTimeout(() => {
-      void runAnalysis(deferredSql, workspaceSettings, sourceFilename);
+      void runAnalysis(
+        deferredSql,
+        workspaceSettings,
+        sourceFilename,
+        sampleUsed,
+      );
     }, 120);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [deferredSql, runAnalysis, sourceFilename, workspaceSettings]);
+  }, [deferredSql, runAnalysis, sampleUsed, sourceFilename, workspaceSettings]);
 
-  function pushStatus(message: string, tone: StatusTone = "default") {
-    const id = statusIdRef.current + 1;
-    statusIdRef.current = id;
-    const timeoutId = window.setTimeout(() => {
-      dismissStatus(id);
-    }, STATUS_MESSAGE_TTL_MS);
-
-    messageTimeoutsRef.current.set(id, timeoutId);
-
-    setStatusMessages((current) =>
-      [{ id, message, tone }, ...current].slice(0, 3),
-    );
-  }
-
-  function dismissStatus(id: number) {
-    const timeoutId = messageTimeoutsRef.current.get(id);
-
-    if (timeoutId) {
-      window.clearTimeout(timeoutId);
-      messageTimeoutsRef.current.delete(id);
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
     }
 
-    setStatusMessages((current) => current.filter((message) => message.id !== id));
-  }
+    function handleLoadSampleEvent(event: Event) {
+      onExternalSampleLoad(
+        (event as CustomEvent<LoadPostgresMigrationSampleDetail>).detail,
+      );
+    }
+
+    window.addEventListener(
+      LOAD_POSTGRES_MIGRATION_SAMPLE_EVENT,
+      handleLoadSampleEvent,
+    );
+
+    return () => {
+      window.removeEventListener(
+        LOAD_POSTGRES_MIGRATION_SAMPLE_EVENT,
+        handleLoadSampleEvent,
+      );
+    };
+  }, []);
+
+  const onGlobalShortcutKeyDown = useEffectEvent((event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      if (closeTransientUi()) {
+        event.preventDefault();
+      }
+
+      return;
+    }
+
+    if (saveDialogState || isCommandMenuOpen || isShortcutsOpen) {
+      return;
+    }
+
+    const hasModifier = event.metaKey || event.ctrlKey;
+    const unsafeExample = getPostgresMigrationSample(
+      DEFAULT_POSTGRES_MIGRATION_SAMPLE_ID,
+    );
+
+    if (hasModifier && event.key === "Enter") {
+      event.preventDefault();
+      handleRunAnalysisNow();
+      return;
+    }
+
+    if (hasModifier && !event.shiftKey && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openCommandMenu();
+      return;
+    }
+
+    if (
+      hasModifier &&
+      event.shiftKey &&
+      event.key.toLowerCase() === "c" &&
+      markdownReportText.length > 0
+    ) {
+      event.preventDefault();
+      void handleCopyMarkdownReport();
+      return;
+    }
+
+    if (
+      hasModifier &&
+      event.shiftKey &&
+      event.key.toLowerCase() === "l" &&
+      unsafeExample
+    ) {
+      event.preventDefault();
+      handleLoadSample(unsafeExample);
+      return;
+    }
+
+    if (
+      event.key === "/" &&
+      !hasModifier &&
+      !event.altKey &&
+      !event.shiftKey &&
+      !isEditableShortcutTarget(event.target)
+    ) {
+      if (!findingsSearchInputRef.current) {
+        return;
+      }
+
+      event.preventDefault();
+      focusFindingsSearch();
+    }
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      onGlobalShortcutKeyDown(event);
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
 
   function updateSetting<K extends keyof PersistedWorkspaceSettings>(
     key: K,
@@ -1296,16 +1665,267 @@ export function PostgresMigrationCheckerShell() {
     });
   }
 
-  function handleLoadSample(sample: PostgresMigrationSample) {
+  function handleRedactionModeChange(nextRedactionMode: boolean) {
+    updateSetting("redactionMode", nextRedactionMode);
+
+    if (nextRedactionMode && !workspaceSettings.redactionMode) {
+      trackRedactionModeEnabled(TOOL_ID);
+    }
+  }
+
+  function handleEditorChange(nextSql: string) {
+    setSql(nextSql);
+    setOpenedSavedAnalysisId(null);
+  }
+
+  function handleResetSettings() {
+    writePersistedWorkspaceSettings(createDefaultWorkspaceSettings());
+    setTransactionAssumptionMode("auto");
+    pushStatus("Reset local settings");
+  }
+
+  function loadSampleIntoWorkspace(sample: PostgresMigrationSample) {
     setSql(sample.sql);
     setSourceFilename(null);
     setSelectedSampleId(sample.id);
+    setOpenedSavedAnalysisId(null);
+    setSelectedFindingId(null);
     setIsExamplesOpen(false);
+    trackSampleLoaded(TOOL_ID);
     pushStatus(
       sample.id === DEFAULT_POSTGRES_MIGRATION_SAMPLE_ID
         ? "Loaded unsafe example"
         : `Loaded ${sample.name}`,
     );
+  }
+
+  function handleLoadSample(sample: PostgresMigrationSample) {
+    loadSampleIntoWorkspace(sample);
+  }
+
+  function openCommandMenu() {
+    setIsExamplesOpen(false);
+    setIsSavedHistoryOpen(false);
+    setCommandMenuQuery("");
+    setIsCommandMenuOpen(true);
+  }
+
+  function openShortcutsHelp() {
+    setIsExamplesOpen(false);
+    setIsSavedHistoryOpen(false);
+    setIsShortcutsOpen(true);
+  }
+
+  function openSettingsSection() {
+    setIsSettingsOpen(true);
+    scrollElementIntoView(settingsSectionRef.current);
+  }
+
+  function openPrivacyExplanation() {
+    setIsPrivacyExplanationOpen(true);
+    scrollElementIntoView(privacyBannerRef.current);
+  }
+
+  function focusFindingsSearch() {
+    setResultsTab("findings");
+    window.requestAnimationFrame(() => {
+      findingsSearchInputRef.current?.focus();
+      findingsSearchInputRef.current?.select();
+    });
+  }
+
+  function handleToggleExamplesMenu() {
+    setIsExamplesOpen((current) => !current);
+  }
+
+  function handleOpenExamplesFromMobileBar() {
+    scrollElementIntoView(migrationInputSectionRef.current);
+    setIsExamplesOpen(true);
+  }
+
+  function handleRunAnalysisNow() {
+    if (sql.trim().length === 0 || isAnalyzing) {
+      return;
+    }
+
+    void runAnalysis(sql, workspaceSettings, sourceFilename, sampleUsed);
+  }
+
+  function closeTransientUi() {
+    let didCloseAnything = false;
+
+    if (saveDialogState) {
+      setSaveDialogState(null);
+      didCloseAnything = true;
+    }
+
+    if (isCommandMenuOpen) {
+      setIsCommandMenuOpen(false);
+      setCommandMenuQuery("");
+      didCloseAnything = true;
+    }
+
+    if (isShortcutsOpen) {
+      setIsShortcutsOpen(false);
+      didCloseAnything = true;
+    }
+
+    if (isExamplesOpen) {
+      setIsExamplesOpen(false);
+      didCloseAnything = true;
+    }
+
+    if (isSavedHistoryOpen) {
+      setIsSavedHistoryOpen(false);
+      didCloseAnything = true;
+    }
+
+    if (isPrivacyExplanationOpen) {
+      setIsPrivacyExplanationOpen(false);
+      didCloseAnything = true;
+    }
+
+    if (isSettingsOpen) {
+      setIsSettingsOpen(false);
+      didCloseAnything = true;
+    }
+
+    return didCloseAnything;
+  }
+
+  function handleOpenSaveDialog() {
+    if (!canSaveLocally) {
+      return;
+    }
+
+    setSaveDialogState({
+      title: saveDialogSuggestedTitle,
+    });
+  }
+
+  function handleCloseSaveDialog() {
+    setSaveDialogState(null);
+  }
+
+  function persistCurrentAnalysisLocally(includeSql: boolean) {
+    if (!activeAnalysisResult) {
+      return;
+    }
+
+    const savedAnalysis = saveLocalAnalysis({
+      analysisResult: activeAnalysisResult,
+      includeSql,
+      redactionMode: workspaceSettings.redactionMode,
+      sourceFilename,
+      sql,
+      title: saveDialogState?.title,
+    });
+
+    setOpenedSavedAnalysisId(savedAnalysis.id);
+    setIsSavedHistoryOpen(true);
+    setSaveDialogState(null);
+    trackLocalSaveSaved({
+      toolId: TOOL_ID,
+      redactionModeEnabled: workspaceSettings.redactionMode,
+      sampleUsed,
+    });
+    pushStatus(
+      includeSql
+        ? `Saved ${savedAnalysis.title} locally with SQL`
+        : `Saved ${savedAnalysis.title} locally as a summary`,
+    );
+  }
+
+  function handleOpenSavedAnalysis(savedAnalysis: SavedLocalAnalysis) {
+    const nextTransactionAssumptionMode =
+      savedAnalysis.analysisResult?.settings.transactionAssumptionMode ?? "auto";
+    const nextWorkspaceSettings: PersistedWorkspaceSettings = {
+      ...workspaceSettings,
+      postgresVersion: savedAnalysis.postgresVersion,
+      frameworkPreset: savedAnalysis.frameworkPreset,
+      tableSizeProfile: savedAnalysis.tableSizeProfile,
+      redactionMode:
+        savedAnalysis.analysisResult?.settings.redactionMode ??
+        workspaceSettings.redactionMode,
+    };
+
+    writePersistedWorkspaceSettings(nextWorkspaceSettings);
+    setTransactionAssumptionMode(nextTransactionAssumptionMode);
+    setSql(savedAnalysis.sqlInput ?? "");
+    setSourceFilename(savedAnalysis.sourceFilename ?? null);
+    setSelectedSampleId(null);
+    setSelectedFindingId(null);
+    setAnalysisResult(
+      (savedAnalysis.analysisResult as AnalysisResult | undefined) ?? null,
+    );
+    setOpenedSavedAnalysisId(savedAnalysis.id);
+    setIsSavedHistoryOpen(false);
+    setLastAnalyzedSql(savedAnalysis.sqlInput ?? "");
+    setLastAnalyzedSourceFilename(savedAnalysis.sourceFilename ?? null);
+    setLastAnalyzedSettingsSignature(
+      getWorkspaceSettingsSignature(
+        nextWorkspaceSettings,
+        nextTransactionAssumptionMode,
+        savedAnalysis.sourceFilename ?? null,
+      ),
+    );
+    trackLocalSaveOpened({
+      toolId: TOOL_ID,
+      redactionModeEnabled:
+        savedAnalysis.analysisResult?.settings.redactionMode ??
+        nextWorkspaceSettings.redactionMode,
+      sampleUsed: false,
+    });
+    pushStatus(`Opened ${savedAnalysis.title}`);
+  }
+
+  function handleDeleteSavedAnalysis(savedAnalysis: SavedLocalAnalysis) {
+    const confirmed = window.confirm(
+      `Delete "${savedAnalysis.title}" from this browser's local history?`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    deleteSavedLocalAnalysis(savedAnalysis.id);
+
+    if (openedSavedAnalysisId === savedAnalysis.id) {
+      setOpenedSavedAnalysisId(null);
+
+      if (!savedAnalysis.sqlInput) {
+        setAnalysisResult(null);
+        setSourceFilename(null);
+        setLastAnalyzedSql("");
+        setLastAnalyzedSourceFilename(null);
+        setLastAnalyzedSettingsSignature("");
+      }
+    }
+
+    pushStatus(`Deleted ${savedAnalysis.title}`);
+  }
+
+  function handleClearAllLocalHistory() {
+    const confirmed = window.confirm(
+      "Clear all saved PostgreSQL migration analyses from this browser?",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    clearSavedLocalHistory();
+    setOpenedSavedAnalysisId(null);
+
+    if (sql.trim().length === 0) {
+      setAnalysisResult(null);
+      setSourceFilename(null);
+      setLastAnalyzedSql("");
+      setLastAnalyzedSourceFilename(null);
+      setLastAnalyzedSettingsSignature("");
+    }
+
+    pushStatus("Cleared all local history");
   }
 
   async function handlePasteFromClipboard() {
@@ -1319,9 +1939,42 @@ export function PostgresMigrationCheckerShell() {
       setSql(clipboardText);
       setSourceFilename(null);
       setSelectedSampleId(null);
+      setOpenedSavedAnalysisId(null);
     } catch {
       pushStatus("Could not read clipboard. Paste manually instead.", "error");
     }
+  }
+
+  async function handleCopyRedactedSql() {
+    if (sql.trim().length === 0) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(redactedSql);
+      pushStatus(
+        hasRedactedCopy
+          ? "Copied redacted SQL"
+          : "Copied SQL. No likely secrets were detected to redact.",
+      );
+    } catch {
+      pushStatus("Could not copy to clipboard. Copy manually instead.", "error");
+    }
+  }
+
+  function handleReplaceEditorWithRedactedCopy() {
+    if (sql.trim().length === 0) {
+      return;
+    }
+
+    setSql(redactedSql);
+    setOpenedSavedAnalysisId(null);
+    setSelectedSampleId(null);
+    pushStatus(
+      hasRedactedCopy
+        ? "Replaced editor contents with the redacted copy"
+        : "Editor already matches the redacted copy",
+    );
   }
 
   async function handleCopyMarkdownReport() {
@@ -1331,6 +1984,12 @@ export function PostgresMigrationCheckerShell() {
 
     try {
       await navigator.clipboard.writeText(markdownReportText);
+      trackReportCopied({
+        toolId: TOOL_ID,
+        format: "markdown",
+        redactionModeEnabled: workspaceSettings.redactionMode,
+        sampleUsed,
+      });
       pushStatus("Copied Markdown report");
     } catch {
       pushStatus("Could not copy to clipboard. Copy manually instead.", "error");
@@ -1347,6 +2006,12 @@ export function PostgresMigrationCheckerShell() {
       filename: reportFilenames.markdown,
       mimeType: "text/markdown;charset=utf-8",
     });
+    trackReportExported({
+      toolId: TOOL_ID,
+      exportActionType: "download-markdown",
+      redactionModeEnabled: workspaceSettings.redactionMode,
+      sampleUsed,
+    });
     pushStatus(`Downloaded ${reportFilenames.markdown}`);
   }
 
@@ -1359,6 +2024,12 @@ export function PostgresMigrationCheckerShell() {
       content: createHtmlReport(reportExportInput),
       filename: reportFilenames.html,
       mimeType: "text/html;charset=utf-8",
+    });
+    trackReportExported({
+      toolId: TOOL_ID,
+      exportActionType: "download-html",
+      redactionModeEnabled: workspaceSettings.redactionMode,
+      sampleUsed,
     });
     pushStatus(`Downloaded ${reportFilenames.html}`);
   }
@@ -1373,6 +2044,12 @@ export function PostgresMigrationCheckerShell() {
       filename: reportFilenames.json,
       mimeType: "application/json;charset=utf-8",
     });
+    trackReportExported({
+      toolId: TOOL_ID,
+      exportActionType: "download-json",
+      redactionModeEnabled: workspaceSettings.redactionMode,
+      sampleUsed,
+    });
     pushStatus(`Downloaded ${reportFilenames.json}`);
   }
 
@@ -1384,6 +2061,12 @@ export function PostgresMigrationCheckerShell() {
     const opened = openPrintReport(createHtmlReport(reportExportInput));
 
     if (opened) {
+      trackReportExported({
+        toolId: TOOL_ID,
+        exportActionType: "print",
+        redactionModeEnabled: workspaceSettings.redactionMode,
+        sampleUsed,
+      });
       pushStatus("Opened printable report");
       return;
     }
@@ -1407,6 +2090,11 @@ export function PostgresMigrationCheckerShell() {
 
     try {
       await navigator.clipboard.writeText(shareLink);
+      trackSettingsLinkCopied({
+        toolId: TOOL_ID,
+        redactionModeEnabled: workspaceSettings.redactionMode,
+        sampleUsed,
+      });
       pushStatus("Copied settings link");
     } catch {
       pushStatus("Could not copy to clipboard. Copy manually instead.", "error");
@@ -1491,7 +2179,9 @@ export function PostgresMigrationCheckerShell() {
 
   async function handleCopySqlSnippet(sqlSnippet: string) {
     try {
-      await navigator.clipboard.writeText(sqlSnippet);
+      await navigator.clipboard.writeText(
+        getOutputSqlSnippet(sqlSnippet, workspaceSettings.redactionMode),
+      );
       pushStatus("Copied to clipboard");
     } catch {
       pushStatus("Could not copy to clipboard. Copy manually instead.", "error");
@@ -1522,6 +2212,7 @@ export function PostgresMigrationCheckerShell() {
       setSql(fileContents);
       setSourceFilename(file.name);
       setSelectedSampleId(null);
+      setOpenedSavedAnalysisId(null);
       pushStatus(`Uploaded ${file.name} locally`);
     } finally {
       event.target.value = "";
@@ -1532,6 +2223,7 @@ export function PostgresMigrationCheckerShell() {
     setSql("");
     setSourceFilename(null);
     setSelectedSampleId(null);
+    setOpenedSavedAnalysisId(null);
     setSelectedFindingId(null);
     setAnalysisResult(null);
     setLastAnalyzedSql("");
@@ -1553,12 +2245,270 @@ export function PostgresMigrationCheckerShell() {
     }
   }
 
+  const safeExample = getPostgresMigrationSample(DEFAULT_SAFE_SAMPLE_ID);
+  const unsafeExample = getPostgresMigrationSample(
+    DEFAULT_POSTGRES_MIGRATION_SAMPLE_ID,
+  );
+  const commandMenuCommands = [
+    {
+      id: "analyze",
+      label: "Analyze migration",
+      description: "Run the checker immediately on the current SQL.",
+      shortcut: SHORTCUT_LABELS.analyze,
+      keywords: ["run", "analyze", "check"],
+      disabled: sql.trim().length === 0 || isAnalyzing,
+      disabledReason:
+        sql.trim().length === 0
+          ? "Paste or load SQL before running analysis."
+          : "Analysis is already running.",
+      onSelect: handleRunAnalysisNow,
+    },
+    {
+      id: "load-unsafe-example",
+      label: "Load unsafe example",
+      description: "Load the risky migration example into the editor.",
+      shortcut: SHORTCUT_LABELS.loadUnsafeExample,
+      keywords: ["example", "unsafe", "risky"],
+      disabled: !unsafeExample,
+      disabledReason: "The unsafe example is unavailable right now.",
+      onSelect: () => {
+        if (unsafeExample) {
+          handleLoadSample(unsafeExample);
+        }
+      },
+    },
+    {
+      id: "load-safe-example",
+      label: "Load safe example",
+      description: "Load the safer foreign-key validation example.",
+      keywords: ["example", "safe", "foreign key"],
+      disabled: !safeExample,
+      disabledReason: "The safe example is unavailable right now.",
+      onSelect: () => {
+        if (safeExample) {
+          handleLoadSample(safeExample);
+        }
+      },
+    },
+    {
+      id: "open-settings",
+      label: "Open settings",
+      description: "Jump to PostgreSQL, framework, and redaction settings.",
+      keywords: ["settings", "preferences", "options"],
+      onSelect: openSettingsSection,
+    },
+    {
+      id: "copy-markdown-report",
+      label: "Copy Markdown report",
+      description: "Copy the current report in Markdown format.",
+      shortcut: SHORTCUT_LABELS.copyMarkdownReport,
+      keywords: ["copy", "markdown", "report"],
+      disabled: markdownReportText.length === 0,
+      disabledReason: "Run analysis before copying a report.",
+      onSelect: () => {
+        void handleCopyMarkdownReport();
+      },
+    },
+    {
+      id: "download-html-report",
+      label: "Download HTML report",
+      description: "Download a browser-friendly HTML report.",
+      keywords: ["download", "html", "report"],
+      disabled: reportExportInput === null,
+      disabledReason: "Run analysis before downloading an HTML report.",
+      onSelect: handleDownloadHtmlReport,
+    },
+    {
+      id: "toggle-redaction-mode",
+      label: "Toggle redaction mode",
+      description: workspaceSettings.redactionMode
+        ? "Turn redaction mode off for previews and exports."
+        : "Turn redaction mode on for previews and exports.",
+      keywords: ["redaction", "privacy", "secret"],
+      onSelect: () => {
+        handleRedactionModeChange(!workspaceSettings.redactionMode);
+        pushStatus(
+          workspaceSettings.redactionMode
+            ? "Turned redaction mode off"
+            : "Turned redaction mode on",
+        );
+      },
+    },
+    {
+      id: "toggle-low-severity",
+      label: "Toggle low severity findings",
+      description: workspaceSettings.showLowSeverity
+        ? "Hide lower-severity findings from the default review surface."
+        : "Show lower-severity findings in the review surface.",
+      keywords: ["low severity", "filters", "findings"],
+      onSelect: () => {
+        updateSetting("showLowSeverity", !workspaceSettings.showLowSeverity);
+        pushStatus(
+          workspaceSettings.showLowSeverity
+            ? "Hid low severity findings"
+            : "Showing low severity findings",
+        );
+      },
+    },
+    {
+      id: "save-locally",
+      label: "Save locally",
+      description: "Open the local-only save flow for this analysis.",
+      keywords: ["save", "history", "local"],
+      disabled: !canSaveLocally,
+      disabledReason: "Run analysis before saving locally.",
+      onSelect: handleOpenSaveDialog,
+    },
+    {
+      id: "open-privacy-explanation",
+      label: "Open privacy explanation",
+      description: "Expand the local-first privacy explanation.",
+      keywords: ["privacy", "local", "analytics"],
+      onSelect: openPrivacyExplanation,
+    },
+    {
+      id: "clear-input",
+      label: "Clear input",
+      description: "Reset the editor and the current local result.",
+      keywords: ["clear", "reset", "editor"],
+      disabled: sql.trim().length === 0,
+      disabledReason: "The editor is already empty.",
+      onSelect: handleClearInput,
+    },
+    {
+      id: "show-shortcuts",
+      label: "Show keyboard shortcuts",
+      description: "Open the help modal with keyboard shortcuts.",
+      keywords: ["shortcuts", "keyboard", "help"],
+      onSelect: openShortcutsHelp,
+    },
+  ] satisfies CommandMenuCommand[];
+  const normalizedCommandMenuQuery = commandMenuQuery.trim().toLowerCase();
+  const filteredCommandMenuCommands = commandMenuCommands.filter((command) => {
+    if (normalizedCommandMenuQuery.length === 0) {
+      return true;
+    }
+
+    const haystack = [
+      command.label,
+      command.description,
+      ...(command.keywords ?? []),
+      command.shortcut,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    return haystack.includes(normalizedCommandMenuQuery);
+  });
+
+  function handleCommandSelect(command: CommandMenuCommand) {
+    if (command.disabled) {
+      return;
+    }
+
+    setIsCommandMenuOpen(false);
+    setCommandMenuQuery("");
+    command.onSelect();
+  }
+
   return (
     <>
-      <div id="checker-workspace" className="space-y-6 scroll-mt-24">
-        <Card className="p-5 sm:p-6">
-          <div className="space-y-5">
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div
+        id="checker-workspace"
+        className="space-y-6 scroll-mt-24 pb-24 xl:pb-0"
+      >
+        <div
+          ref={privacyBannerRef}
+          className="sticky top-20 z-20 rounded-3xl border border-border bg-background/95 px-4 py-4 shadow-[0_12px_24px_rgba(15,23,42,0.05)] backdrop-blur"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex size-10 items-center justify-center rounded-xl border border-border bg-card">
+                <ShieldCheck className="size-4 text-muted-foreground" />
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-foreground">
+                  Local-first: your SQL is analyzed in this browser. Authos does not upload or store migration contents.
+                </p>
+                <details
+                  open={isPrivacyExplanationOpen}
+                  className="group rounded-2xl border border-border bg-card px-4 py-3"
+                >
+                  <summary
+                    onClick={(event) => {
+                      event.preventDefault();
+                      setIsPrivacyExplanationOpen((current) => !current);
+                    }}
+                    className="cursor-pointer text-sm font-medium text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+                  >
+                    How privacy works
+                  </summary>
+                  <ul className="mt-3 space-y-2 text-sm leading-7 text-muted-foreground">
+                    {PRIVACY_PANEL_POINTS.map((point) => (
+                      <li key={point}>{point}</li>
+                    ))}
+                  </ul>
+                </details>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">Browser local</Badge>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                title={`Open command menu (${SHORTCUT_LABELS.commandMenu})`}
+                onClick={openCommandMenu}
+              >
+                Command menu
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                title="View keyboard shortcuts for this tool page"
+                onClick={openShortcutsHelp}
+              >
+                Shortcuts
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <div ref={settingsSectionRef}>
+          <Card className="p-5 sm:p-6">
+            <div className="space-y-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h2 className="text-xl font-semibold text-foreground">
+                    Review settings
+                  </h2>
+                  <p className="text-sm leading-7 text-muted-foreground">
+                    Tune version, framework, transaction assumptions, and privacy
+                    defaults without leaving the page.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  aria-expanded={isSettingsOpen}
+                  aria-controls="checker-settings-panel"
+                  className="xl:hidden"
+                  onClick={() => {
+                    setIsSettingsOpen((current) => !current);
+                  }}
+                >
+                  {isSettingsOpen ? "Hide settings" : "Show settings"}
+                </Button>
+              </div>
+
+              <div
+                id="checker-settings-panel"
+                className={cn("space-y-5", !isSettingsOpen && "hidden xl:block")}
+              >
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div className="space-y-2">
                 <label
                   htmlFor="postgres-version"
@@ -1681,57 +2631,173 @@ export function PostgresMigrationCheckerShell() {
               </div>
             </div>
 
-            <div className="grid gap-4 xl:grid-cols-2">
-              <VersionNotesCard
-                profile={selectedVersionProfile}
-                postgresVersion={workspaceSettings.postgresVersion}
-              />
-              <FrameworkNotesCard
-                frameworkMetadata={activeFrameworkMetadata}
-                sourceFilename={sourceFilename}
-                transactionAssumptionMode={transactionAssumptionMode}
-                workspaceSettings={workspaceSettings}
-              />
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <VersionNotesCard
+                    profile={selectedVersionProfile}
+                    postgresVersion={workspaceSettings.postgresVersion}
+                  />
+                  <FrameworkNotesCard
+                    frameworkMetadata={activeFrameworkMetadata}
+                    sourceFilename={sourceFilename}
+                    transactionAssumptionMode={transactionAssumptionMode}
+                    workspaceSettings={workspaceSettings}
+                  />
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-3">
+                  <SettingToggle
+                    label="Auto analyze"
+                    description="Run the checker after edits settle so returning users get faster feedback."
+                    checked={workspaceSettings.autoAnalyze}
+                    onCheckedChange={(checked) => {
+                      updateSetting("autoAnalyze", checked);
+                    }}
+                  />
+                  <SettingToggle
+                    label="Show low severity"
+                    description="Keep quieter warnings visible when you want the fuller review surface."
+                    checked={workspaceSettings.showLowSeverity}
+                    onCheckedChange={(checked) => {
+                      updateSetting("showLowSeverity", checked);
+                    }}
+                  />
+                  <SettingToggle
+                    label="Redaction mode"
+                    description="Mask likely secrets in statement previews, copied snippets, and report exports without changing the editor itself."
+                    checked={workspaceSettings.redactionMode}
+                    onCheckedChange={(checked) => {
+                      handleRedactionModeChange(checked);
+                    }}
+                  />
+                </div>
+
+                <p className="text-sm leading-7 text-muted-foreground">
+                  Safe workspace settings persist in <code>localStorage</code> after
+                  reload. Raw SQL is not stored automatically, local history stays
+                  off for now, and analytics never receive pasted SQL or finding
+                  snippets.
+                </p>
+
+                <div className="flex flex-wrap gap-3">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={handleResetSettings}
+                  >
+                    Reset settings
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        <Card className="p-5 sm:p-6">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-foreground">
+                  Local saved analyses
+                </p>
+                <p className="text-sm leading-7 text-muted-foreground">
+                  Saved analyses stay in this browser only. They are not uploaded
+                  to Authos.
+                </p>
+                <p className="text-sm leading-7 text-muted-foreground">
+                  Raw SQL history is off by default. Nothing is saved unless you
+                  explicitly choose Save locally and confirm whether to include
+                  SQL.
+                </p>
+              </div>
+              <Badge variant="outline">
+                {savedLocalAnalyses.length} saved
+              </Badge>
             </div>
 
-            <div className="grid gap-3 lg:grid-cols-3">
-              <SettingToggle
-                label="Auto analyze"
-                description="Run the checker after edits settle so returning users get faster feedback."
-                checked={workspaceSettings.autoAnalyze}
-                onCheckedChange={(checked) => {
-                  updateSetting("autoAnalyze", checked);
+            <div className="flex flex-wrap gap-3">
+              <Button
+                type="button"
+                title="Save the current analysis locally in this browser"
+                onClick={handleOpenSaveDialog}
+                disabled={!canSaveLocally}
+              >
+                Save locally
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  setIsSavedHistoryOpen((current) => !current);
                 }}
-              />
-              <SettingToggle
-                label="Show low severity"
-                description="Keep quieter warnings visible when you want the fuller review surface."
-                checked={workspaceSettings.showLowSeverity}
-                onCheckedChange={(checked) => {
-                  updateSetting("showLowSeverity", checked);
+              >
+                Open saved
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  if (openedSavedAnalysis) {
+                    handleDeleteSavedAnalysis(openedSavedAnalysis);
+                  }
                 }}
-              />
-              <SettingToggle
-                label="Redaction mode"
-                description="Hide object names in copied findings when you need a safer review artifact."
-                checked={workspaceSettings.redactionMode}
-                onCheckedChange={(checked) => {
-                  updateSetting("redactionMode", checked);
-                }}
-              />
+                disabled={!openedSavedAnalysis}
+              >
+                Delete saved
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={handleClearAllLocalHistory}
+                disabled={savedLocalAnalyses.length === 0}
+              >
+                Clear all local history
+              </Button>
+              <Button type="button" variant="secondary" disabled>
+                Compare saved analyses
+              </Button>
             </div>
+
+            {!canSaveLocally ? (
+              <p className="text-sm leading-7 text-muted-foreground">
+                Run analysis before saving locally.
+              </p>
+            ) : null}
 
             <p className="text-sm leading-7 text-muted-foreground">
-              Safe workspace settings persist in <code>localStorage</code> after
-              reload. Raw SQL is not stored automatically, and local history stays
-              off for now.
+              Compare saved analyses is coming later. For now, you can reopen
+              one local save at a time.
             </p>
+
+            {openedSavedAnalysis ? (
+              <div className="rounded-2xl border border-border bg-background px-4 py-4">
+                <p className="text-sm font-medium text-foreground">
+                  Open now: {openedSavedAnalysis.title}
+                </p>
+                <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                  {openedSavedAnalysis.saveMode === "with-sql"
+                    ? "This saved analysis restored the SQL into the editor from local storage only."
+                    : "This saved analysis was stored as a summary only, so the SQL editor stays blank until you paste or load a new migration."}
+                </p>
+              </div>
+            ) : null}
+
+            {isSavedHistoryOpen ? (
+              <SavedAnalysesPanel
+                openedSavedAnalysisId={openedSavedAnalysisId}
+                savedAnalyses={savedLocalAnalyses}
+                onDeleteSavedAnalysis={handleDeleteSavedAnalysis}
+                onOpenSavedAnalysis={handleOpenSavedAnalysis}
+              />
+            ) : null}
           </div>
         </Card>
 
         <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
           <Card className="overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
+            <div
+              ref={migrationInputSectionRef}
+              className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4"
+            >
               <div className="space-y-1">
                 <h2 className="text-xl font-semibold">Migration input</h2>
                 <p className="text-sm text-muted-foreground">
@@ -1743,14 +2809,13 @@ export function PostgresMigrationCheckerShell() {
             </div>
 
             <div className="space-y-5 p-6">
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="grid gap-3 sm:grid-cols-2 xl:flex xl:flex-wrap">
                 <div ref={examplesMenuRef} className="relative">
                   <Button
                     type="button"
                     variant="secondary"
-                    onClick={() => {
-                      setIsExamplesOpen((current) => !current);
-                    }}
+                    title={`Open examples. ${SHORTCUT_LABELS.loadUnsafeExample} loads the default unsafe example.`}
+                    onClick={handleToggleExamplesMenu}
                     aria-expanded={isExamplesOpen}
                     aria-controls="examples-menu"
                   >
@@ -1760,7 +2825,7 @@ export function PostgresMigrationCheckerShell() {
                   {isExamplesOpen ? (
                     <div
                       id="examples-menu"
-                      className="absolute left-0 top-full z-20 mt-2 w-[min(26rem,calc(100vw-4rem))] space-y-4 rounded-3xl border border-border bg-card p-4 shadow-[0_20px_40px_rgba(15,23,42,0.12)]"
+                      className="fixed inset-x-4 bottom-24 z-30 max-h-[70vh] overflow-y-auto rounded-3xl border border-border bg-card p-4 shadow-[0_20px_40px_rgba(15,23,42,0.12)] sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-0 sm:top-full sm:mt-2 sm:max-h-[32rem] sm:w-[min(26rem,calc(100vw-4rem))]"
                     >
                       {POSTGRES_MIGRATION_SAMPLE_GROUPS.map((group) => (
                         <div key={group} className="space-y-2">
@@ -1777,7 +2842,7 @@ export function PostgresMigrationCheckerShell() {
                                 onClick={() => {
                                   handleLoadSample(sample);
                                 }}
-                                className="w-full rounded-2xl border border-transparent px-3 py-3 text-left transition hover:border-border hover:bg-accent"
+                                className="w-full rounded-2xl border border-transparent px-3 py-3 text-left transition hover:border-border hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
                               >
                                 <div className="flex items-center justify-between gap-3">
                                   <span className="text-sm font-medium text-foreground">
@@ -1811,6 +2876,7 @@ export function PostgresMigrationCheckerShell() {
                 <Button
                   type="button"
                   variant="secondary"
+                  title="Upload a local .sql file"
                   onClick={() => {
                     fileInputRef.current?.click();
                   }}
@@ -1820,6 +2886,7 @@ export function PostgresMigrationCheckerShell() {
                 <Button
                   type="button"
                   variant="secondary"
+                  title="Paste SQL from your clipboard"
                   onClick={() => {
                     void handlePasteFromClipboard();
                   }}
@@ -1828,7 +2895,28 @@ export function PostgresMigrationCheckerShell() {
                 </Button>
                 <Button
                   type="button"
+                  variant="secondary"
+                  title="Copy a masked version of the current SQL"
+                  onClick={() => {
+                    void handleCopyRedactedSql();
+                  }}
+                  disabled={sql.trim().length === 0}
+                >
+                  Copy redacted SQL
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  title="Replace the editor with the redacted copy"
+                  onClick={handleReplaceEditorWithRedactedCopy}
+                  disabled={sql.trim().length === 0}
+                >
+                  Replace editor with redacted copy
+                </Button>
+                <Button
+                  type="button"
                   variant="ghost"
+                  title="Clear the editor and current result"
                   onClick={handleClearInput}
                   disabled={sql.trim().length === 0}
                 >
@@ -1847,18 +2935,26 @@ export function PostgresMigrationCheckerShell() {
                         Local-only input handling
                       </p>
                       <p className="text-sm text-muted-foreground">
-                        Uploads stay on this device, safe settings persist, and raw
-                        SQL is not auto-saved for returning sessions.
+                        Uploads are read by this browser only, safe settings may
+                        persist locally, and raw SQL is not auto-saved for
+                        returning sessions.
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        .sql files are read locally in your browser.
                       </p>
                     </div>
                   </div>
 
-                  <label
-                    htmlFor={fileInputId}
-                    className="inline-flex cursor-pointer items-center justify-center rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium text-card-foreground transition hover:bg-accent hover:text-accent-foreground"
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    title="Choose a local .sql file"
+                    onClick={() => {
+                      fileInputRef.current?.click();
+                    }}
                   >
                     Choose .sql file
-                  </label>
+                  </Button>
                 </div>
               </div>
 
@@ -1869,11 +2965,30 @@ export function PostgresMigrationCheckerShell() {
                 <CodeEditor
                   ariaLabel="Migration SQL editor"
                   value={sql}
-                  onChange={setSql}
+                  onChange={handleEditorChange}
                   placeholder="ALTER TABLE users ADD COLUMN status text;
 CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                   className="shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
                 />
+                <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
+                  <p>
+                    The editor stays unchanged until you explicitly replace it
+                    with a redacted copy.
+                  </p>
+                  <Badge variant="outline">
+                    {hasRedactedCopy
+                      ? "Likely secrets can be redacted"
+                      : "No likely secrets detected yet"}
+                  </Badge>
+                </div>
+                {openedSavedAnalysis?.saveMode === "summary-only" &&
+                sql.trim().length === 0 ? (
+                  <div className="rounded-2xl border border-border bg-background px-4 py-3 text-sm leading-7 text-muted-foreground">
+                    You opened a summary-only local save. SQL was not stored, so
+                    this editor remains blank until you paste or load a
+                    migration.
+                  </div>
+                ) : null}
               </div>
 
               {featuredSample ? (
@@ -1944,23 +3059,35 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
               </div>
 
               <div className="space-y-5 p-6">
-                {sql.trim().length === 0 ? (
-                  <EmptyStateCard
-                    title="Paste SQL, upload a .sql file, or load an example"
-                    body="The editor is ready. Nothing has been analyzed yet, and no raw SQL is being stored for you automatically."
-                  />
-                ) : isAnalyzing ? (
-                  <EmptyStateCard
-                    title="Running local analysis"
-                    body="The checker is reviewing the current SQL in your browser-local workspace."
-                  />
-                ) : activeAnalysisResult === null ? (
-                  <EmptyStateCard
-                    title="Analysis is ready when you are"
-                    body="Auto analyze is off right now, so use the button below once your migration text is in place."
-                  />
-                ) : (
+                {activeAnalysisResult ? (
                   <>
+                    {openedSavedAnalysis ? (
+                      <div className="rounded-2xl border border-border bg-background px-4 py-4">
+                        <p className="text-sm font-medium text-foreground">
+                          Viewing a local saved analysis
+                        </p>
+                        <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                          {openedSavedAnalysis.saveMode === "with-sql"
+                            ? "This saved analysis restored SQL from this browser's local storage only."
+                            : "This saved analysis was reopened from a summary-only local save, so statement previews may be limited until you load SQL again."}
+                        </p>
+                      </div>
+                    ) : null}
+
+                    {parserUsedFallback ? (
+                      <div
+                        role="status"
+                        className="rounded-2xl border border-border bg-background px-4 py-4"
+                      >
+                        <p className="text-sm font-medium text-foreground">
+                          Parser fallback notice
+                        </p>
+                        <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                          We could not fully parse this SQL, so the checker used fallback pattern analysis. Findings may be less precise.
+                        </p>
+                      </div>
+                    ) : null}
+
                     <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
                       <RiskScoreCard result={activeAnalysisResult} />
                       <RiskSummary result={activeAnalysisResult} />
@@ -1981,6 +3108,8 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                       availableCategories={availableFindingCategories}
                       categoryFilter={categoryFilter}
                       filteredCount={visibleFindings.length}
+                      searchInputId={findingsSearchInputId}
+                      searchInputRef={findingsSearchInputRef}
                       searchTerm={searchTerm}
                       severityFilter={severityFilter}
                       showOnlyBlockingRisks={showOnlyBlockingRisks}
@@ -1995,13 +3124,21 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                       onSortModeChange={setSortMode}
                     />
 
-                    <div className="flex flex-wrap gap-2">
+                    <div
+                      role="tablist"
+                      aria-label="Results view"
+                      className="flex flex-wrap gap-2"
+                    >
                       <button
                         type="button"
+                        role="tab"
+                        id="findings-tab"
+                        aria-controls="findings-panel"
+                        aria-selected={resultsTab === "findings"}
                         onClick={() => {
                           setResultsTab("findings");
                         }}
-                        className={`inline-flex items-center rounded-full border px-4 py-2 text-sm font-medium transition ${
+                        className={`inline-flex items-center rounded-full border px-4 py-2 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
                           resultsTab === "findings"
                             ? "border-foreground/20 bg-card text-foreground"
                             : "border-border bg-background text-muted-foreground hover:text-foreground"
@@ -2011,10 +3148,14 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                       </button>
                       <button
                         type="button"
+                        role="tab"
+                        id="safe-rewrites-tab"
+                        aria-controls="safe-rewrites-panel"
+                        aria-selected={resultsTab === "safe-rewrites"}
                         onClick={() => {
                           setResultsTab("safe-rewrites");
                         }}
-                        className={`inline-flex items-center rounded-full border px-4 py-2 text-sm font-medium transition ${
+                        className={`inline-flex items-center rounded-full border px-4 py-2 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
                           resultsTab === "safe-rewrites"
                             ? "border-foreground/20 bg-card text-foreground"
                             : "border-border bg-background text-muted-foreground hover:text-foreground"
@@ -2025,7 +3166,12 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                     </div>
 
                     {resultsTab === "findings" ? (
-                      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] xl:items-start">
+                      <div
+                        id="findings-panel"
+                        role="tabpanel"
+                        aria-labelledby="findings-tab"
+                        className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] xl:items-start"
+                      >
                         <FindingsList
                           canCopySafeRewrite={(finding) =>
                             findingHasCopyableSafeRewrite(
@@ -2053,32 +3199,54 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                             onCopySafeRewrite={(finding) => {
                               void handleCopySafeRewriteForFinding(finding);
                             }}
+                            redactionMode={workspaceSettings.redactionMode}
                             recipeGroup={selectedRecipeGroup}
                             statement={selectedStatement}
                           />
                         </div>
                       </div>
                     ) : (
-                      <SafeRewritePanel
-                        recipeGroups={visibleSafeRewriteRecipeGroups}
-                        totalGroups={safeRewriteRecipeGroups.length}
-                        onCopyAllMarkdown={() => {
-                          void handleCopyAllRecipeMarkdown();
-                        }}
-                        onCopyRecipeMarkdown={(recipeGroup, recipe) => {
-                          void handleCopyRecipeMarkdown(recipeGroup, recipe);
-                        }}
-                        onCopySqlSnippet={(recipe) => {
-                          if (!recipe.sqlSnippet) {
-                            return;
-                          }
+                      <div
+                        id="safe-rewrites-panel"
+                        role="tabpanel"
+                        aria-labelledby="safe-rewrites-tab"
+                      >
+                        <SafeRewritePanel
+                          recipeGroups={visibleSafeRewriteRecipeGroups}
+                          totalGroups={safeRewriteRecipeGroups.length}
+                          onCopyAllMarkdown={() => {
+                            void handleCopyAllRecipeMarkdown();
+                          }}
+                          onCopyRecipeMarkdown={(recipeGroup, recipe) => {
+                            void handleCopyRecipeMarkdown(recipeGroup, recipe);
+                          }}
+                          onCopySqlSnippet={(recipe) => {
+                            if (!recipe.sqlSnippet) {
+                              return;
+                            }
 
-                          void handleCopySqlSnippet(recipe.sqlSnippet);
-                        }}
-                      />
+                            void handleCopySqlSnippet(recipe.sqlSnippet);
+                          }}
+                        />
+                      </div>
                     )}
                   </>
-                )}
+                ) : sql.trim().length === 0 ? (
+                  <EmptyStateCard
+                    title="Paste SQL, upload a .sql file, or load an example"
+                    body="The editor is ready. Nothing has been analyzed yet, and no raw SQL is being stored for you automatically."
+                  />
+                ) : isAnalyzing ? (
+                  <EmptyStateCard
+                    title="Running local analysis"
+                    body="The checker is reviewing the current SQL in your browser-local workspace."
+                  />
+                ) : activeAnalysisResult === null ? (
+                  <EmptyStateCard
+                    title="Analysis is ready when you are"
+                    body="Auto analyze is off right now, so use the button below once your migration text is in place."
+                  />
+                ) : null}
 
                 <div className="space-y-4 rounded-3xl border border-border bg-background px-4 py-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2106,18 +3274,19 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                           Include SQL snippets in report
                         </span>
                         <span className="block text-sm leading-6 text-muted-foreground">
-                          Off by default so exports stay safer to share.
+                          Off by default so exports stay safer to share. When
+                          redaction mode is on, included snippets are masked for
+                          likely secrets.
                         </span>
                       </span>
                     </label>
                   </div>
 
-                  <div className="flex flex-wrap gap-3">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:flex xl:flex-wrap">
                     <Button
                       type="button"
-                      onClick={() => {
-                        void runAnalysis(sql, workspaceSettings, sourceFilename);
-                      }}
+                      title={`Analyze now (${SHORTCUT_LABELS.analyze})`}
+                      onClick={handleRunAnalysisNow}
                       disabled={sql.trim().length === 0 || isAnalyzing}
                     >
                       {isAnalyzing ? "Analyzing..." : "Run local analysis"}
@@ -2125,6 +3294,7 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                     <Button
                       type="button"
                       variant="secondary"
+                      title={`Copy Markdown report (${SHORTCUT_LABELS.copyMarkdownReport})`}
                       onClick={() => {
                         void handleCopyMarkdownReport();
                       }}
@@ -2143,6 +3313,7 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                     <Button
                       type="button"
                       variant="secondary"
+                      title="Download the current report as HTML"
                       onClick={handleDownloadHtmlReport}
                       disabled={reportExportInput === null}
                     >
@@ -2175,6 +3346,12 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                       Copy settings link
                     </Button>
                   </div>
+
+                  {markdownReportText.length === 0 ? (
+                    <p className="text-sm leading-7 text-muted-foreground">
+                      Run analysis before copying a report.
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </Card>
@@ -2187,16 +3364,90 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                 <div className="space-y-2">
                   <h3 className="text-lg font-semibold">Local-only privacy notice</h3>
                   <p className="text-sm leading-7 text-muted-foreground">
-                    This workspace keeps migration text on-device by default. The
-                    persisted state is limited to safe review preferences like the
-                    PostgreSQL version, preset, table profile, and display toggles.
+                    This workspace keeps migration text on-device by default.
+                    Reports are generated locally, persisted state is limited to
+                    safe review preferences, and the analytics adapter never
+                    receives raw SQL, filenames, object names, or finding
+                    snippets.
                   </p>
                 </div>
               </div>
             </Card>
+
+            {isDevelopment ? (
+              <AnalyticsDebugPanel events={analyticsDebugEvents} />
+            ) : null}
           </div>
         </div>
       </div>
+
+      <div
+        className={cn(
+          "fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/96 px-4 py-3 shadow-[0_-12px_24px_rgba(15,23,42,0.08)] backdrop-blur xl:hidden",
+          hasTransientUiOpen && "pointer-events-none opacity-0",
+        )}
+      >
+        <div className="mx-auto flex max-w-5xl gap-3">
+          <Button
+            type="button"
+            className="flex-1"
+            title={`Analyze now (${SHORTCUT_LABELS.analyze})`}
+            onClick={handleRunAnalysisNow}
+            disabled={sql.trim().length === 0 || isAnalyzing}
+          >
+            {isAnalyzing ? "Analyzing..." : "Analyze"}
+          </Button>
+          <Button
+            type="button"
+            className="flex-1"
+            variant="secondary"
+            title={`Open examples. ${SHORTCUT_LABELS.loadUnsafeExample} loads the unsafe example.`}
+            onClick={handleOpenExamplesFromMobileBar}
+          >
+            Examples
+          </Button>
+        </div>
+      </div>
+
+      <CommandMenuDialog
+        commands={filteredCommandMenuCommands}
+        isOpen={isCommandMenuOpen}
+        query={commandMenuQuery}
+        onClose={() => {
+          setIsCommandMenuOpen(false);
+          setCommandMenuQuery("");
+        }}
+        onQueryChange={setCommandMenuQuery}
+        onSelectCommand={handleCommandSelect}
+      />
+
+      <KeyboardShortcutsDialog
+        isOpen={isShortcutsOpen}
+        onClose={() => {
+          setIsShortcutsOpen(false);
+        }}
+      />
+
+      <SaveLocalAnalysisDialog
+        state={saveDialogState}
+        onClose={handleCloseSaveDialog}
+        onSaveSummaryOnly={() => {
+          persistCurrentAnalysisLocally(false);
+        }}
+        onSaveWithSql={() => {
+          persistCurrentAnalysisLocally(true);
+        }}
+        onTitleChange={(title) => {
+          setSaveDialogState((current) =>
+            current
+              ? {
+                  ...current,
+                  title,
+                }
+              : current,
+          );
+        }}
+      />
 
       <StatusMessageStack
         messages={statusMessages}
@@ -2497,6 +3748,550 @@ function SettingToggle({
         </span>
       </span>
     </label>
+  );
+}
+
+function getFocusableElements(container: HTMLElement | null) {
+  if (!container) {
+    return [];
+  }
+
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => !element.hasAttribute("hidden"));
+}
+
+function ShortcutKeys({ keys }: { keys: string }) {
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1 text-xs font-medium text-muted-foreground">
+      {keys.split(" + ").map((part) => (
+        <kbd
+          key={part}
+          className="rounded-md border border-border bg-background px-2 py-1 font-mono text-[11px] text-foreground"
+        >
+          {part}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
+function ModalShell({
+  children,
+  descriptionId,
+  initialFocusRef,
+  onClose,
+  titleId,
+  widthClassName = "max-w-xl",
+}: {
+  children: ReactNode;
+  descriptionId?: string;
+  initialFocusRef?: RefObject<HTMLElement | null>;
+  onClose: () => void;
+  titleId: string;
+  widthClassName?: string;
+}) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const previousActiveElementRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    previousActiveElementRef.current = document.activeElement as HTMLElement | null;
+
+    const frameId = window.requestAnimationFrame(() => {
+      const nextFocusTarget =
+        initialFocusRef?.current ??
+        getFocusableElements(dialogRef.current)[0] ??
+        dialogRef.current;
+
+      nextFocusTarget?.focus();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      previousActiveElementRef.current?.focus();
+    };
+  }, [initialFocusRef]);
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+
+    if (event.key !== "Tab") {
+      return;
+    }
+
+    const focusableElements = getFocusableElements(dialogRef.current);
+
+    if (focusableElements.length === 0) {
+      event.preventDefault();
+      dialogRef.current?.focus();
+      return;
+    }
+
+    const firstElement = focusableElements[0];
+    const lastElement = focusableElements[focusableElements.length - 1];
+    const activeElement = document.activeElement as HTMLElement | null;
+
+    if (event.shiftKey && activeElement === firstElement) {
+      event.preventDefault();
+      lastElement.focus();
+      return;
+    }
+
+    if (!event.shiftKey && activeElement === lastElement) {
+      event.preventDefault();
+      firstElement.focus();
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        tabIndex={-1}
+        onKeyDown={handleKeyDown}
+        className={cn(
+          "w-full rounded-3xl border border-border bg-background p-6 shadow-[0_24px_48px_rgba(15,23,42,0.18)]",
+          widthClassName,
+        )}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function CommandMenuDialog({
+  commands,
+  isOpen,
+  query,
+  onClose,
+  onQueryChange,
+  onSelectCommand,
+}: {
+  commands: readonly CommandMenuCommand[];
+  isOpen: boolean;
+  query: string;
+  onClose: () => void;
+  onQueryChange: (query: string) => void;
+  onSelectCommand: (command: CommandMenuCommand) => void;
+}) {
+  const titleId = useId();
+  const descriptionId = useId();
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <ModalShell
+      titleId={titleId}
+      descriptionId={descriptionId}
+      initialFocusRef={searchInputRef}
+      onClose={onClose}
+      widthClassName="max-w-2xl"
+    >
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h3 id={titleId} className="text-xl font-semibold text-foreground">
+              Command menu
+            </h3>
+            <ShortcutKeys keys={SHORTCUT_LABELS.commandMenu} />
+          </div>
+          <p id={descriptionId} className="text-sm leading-7 text-muted-foreground">
+            Jump to common PostgreSQL migration checker actions without leaving
+            the keyboard.
+          </p>
+        </div>
+
+        <label className="space-y-2">
+          <span className="text-sm font-medium text-foreground">
+            Search commands
+          </span>
+          <input
+            ref={searchInputRef}
+            type="search"
+            value={query}
+            onChange={(event) => {
+              onQueryChange(event.target.value);
+            }}
+            placeholder="Analyze, examples, redaction, reports..."
+            className="h-11 w-full rounded-2xl border border-border bg-card px-4 text-sm text-foreground outline-none transition focus:border-ring focus:ring-4 focus:ring-ring/15"
+          />
+        </label>
+
+        <div className="max-h-[60vh] space-y-2 overflow-y-auto">
+          {commands.length > 0 ? (
+            commands.map((command) => (
+              <button
+                key={command.id}
+                type="button"
+                disabled={command.disabled}
+                onClick={() => {
+                  onSelectCommand(command);
+                }}
+                className="w-full rounded-2xl border border-border bg-card px-4 py-4 text-left transition hover:border-foreground/20 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-foreground">
+                      {command.label}
+                    </p>
+                    <p className="text-sm leading-7 text-muted-foreground">
+                      {command.description}
+                    </p>
+                    {command.disabledReason ? (
+                      <p className="text-sm leading-6 text-muted-foreground">
+                        {command.disabledReason}
+                      </p>
+                    ) : null}
+                  </div>
+                  {command.shortcut ? (
+                    <ShortcutKeys keys={command.shortcut} />
+                  ) : null}
+                </div>
+              </button>
+            ))
+          ) : (
+            <div className="rounded-2xl border border-border bg-card px-4 py-4 text-sm leading-7 text-muted-foreground">
+              No commands match that search yet.
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end">
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function KeyboardShortcutsDialog({
+  isOpen,
+  onClose,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+}) {
+  const titleId = useId();
+  const descriptionId = useId();
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <ModalShell
+      titleId={titleId}
+      descriptionId={descriptionId}
+      initialFocusRef={closeButtonRef}
+      onClose={onClose}
+      widthClassName="max-w-2xl"
+    >
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <h3 id={titleId} className="text-xl font-semibold text-foreground">
+            Keyboard shortcuts
+          </h3>
+          <p id={descriptionId} className="text-sm leading-7 text-muted-foreground">
+            These shortcuts are scoped to the PostgreSQL Migration Safety Checker.
+            Slash focus is ignored while you are typing in the SQL editor.
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          {SHORTCUT_HELP_ITEMS.map((item) => (
+            <div
+              key={item.keys}
+              className="rounded-2xl border border-border bg-card px-4 py-4"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">
+                    {item.action}
+                  </p>
+                  <p className="text-sm leading-7 text-muted-foreground">
+                    {item.note}
+                  </p>
+                </div>
+                <ShortcutKeys keys={item.keys} />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex justify-end">
+          <Button
+            ref={closeButtonRef}
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+          >
+            Close
+          </Button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function AnalyticsDebugPanel({
+  events,
+}: {
+  events: readonly AnalyticsDebugEvent[];
+}) {
+  return (
+    <Card className="border border-border bg-background px-5 py-5">
+      <details className="group">
+        <summary className="cursor-pointer text-sm font-medium text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
+          Analytics debug
+        </summary>
+        <div className="mt-4 space-y-3">
+          <p className="text-sm leading-7 text-muted-foreground">
+            Development-only view of the last sanitized telemetry events. This
+            panel reads the same payloads that would be logged or sent through a
+            configured vendor hook.
+          </p>
+          {events.length > 0 ? (
+            events.map((event, index) => (
+              <div
+                key={`${event.name}-${event.payload.timestamp}-${index}`}
+                className="rounded-2xl border border-border bg-card px-4 py-4"
+              >
+                <p className="text-sm font-medium text-foreground">
+                  {event.name}
+                </p>
+                <pre className="mt-3 overflow-x-auto rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-6 text-foreground">
+                  <code>{JSON.stringify(event.payload, null, 2)}</code>
+                </pre>
+              </div>
+            ))
+          ) : (
+            <div className="rounded-2xl border border-border bg-card px-4 py-4 text-sm leading-7 text-muted-foreground">
+              No analytics events have been recorded in this session yet.
+            </div>
+          )}
+        </div>
+      </details>
+    </Card>
+  );
+}
+
+function SaveLocalAnalysisDialog({
+  state,
+  onClose,
+  onSaveSummaryOnly,
+  onSaveWithSql,
+  onTitleChange,
+}: {
+  state: SaveDialogState | null;
+  onClose: () => void;
+  onSaveSummaryOnly: () => void;
+  onSaveWithSql: () => void;
+  onTitleChange: (title: string) => void;
+}) {
+  const titleId = useId();
+  const descriptionId = useId();
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
+
+  if (!state) {
+    return null;
+  }
+
+  return (
+    <ModalShell
+      titleId={titleId}
+      descriptionId={descriptionId}
+      initialFocusRef={titleInputRef}
+      onClose={onClose}
+    >
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <h3 id={titleId} className="text-xl font-semibold text-foreground">
+            Save this migration in this browser?
+          </h3>
+          <p
+            id={descriptionId}
+            className="text-sm leading-7 text-muted-foreground"
+          >
+            This stores the SQL in your browser&apos;s local storage. It is not
+            uploaded, but anyone with access to this browser profile may be able
+            to see it.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <label
+            htmlFor="save-analysis-title"
+            className="text-sm font-medium text-foreground"
+          >
+            Title
+          </label>
+          <input
+            ref={titleInputRef}
+            id="save-analysis-title"
+            type="text"
+            value={state.title}
+            onChange={(event) => {
+              onTitleChange(event.target.value);
+            }}
+            placeholder="Migration review"
+            className="h-11 w-full rounded-2xl border border-border bg-card px-4 text-sm text-foreground outline-none transition focus:border-ring focus:ring-4 focus:ring-ring/15"
+          />
+          <p className="text-sm leading-6 text-muted-foreground">
+            Leave the generated title if it already describes this migration well.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-3">
+          <Button type="button" onClick={onSaveWithSql}>
+            Save with SQL
+          </Button>
+          <Button type="button" variant="secondary" onClick={onSaveSummaryOnly}>
+            Save summary only
+          </Button>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function SavedAnalysesPanel({
+  openedSavedAnalysisId,
+  savedAnalyses,
+  onDeleteSavedAnalysis,
+  onOpenSavedAnalysis,
+}: {
+  openedSavedAnalysisId: string | null;
+  savedAnalyses: readonly SavedLocalAnalysis[];
+  onDeleteSavedAnalysis: (savedAnalysis: SavedLocalAnalysis) => void;
+  onOpenSavedAnalysis: (savedAnalysis: SavedLocalAnalysis) => void;
+}) {
+  if (savedAnalyses.length === 0) {
+    return (
+      <div className="rounded-2xl border border-border bg-background px-4 py-4">
+        <p className="text-sm font-medium text-foreground">
+          No local saves yet
+        </p>
+        <p className="mt-2 text-sm leading-7 text-muted-foreground">
+          Save locally when you want to revisit a migration later without using
+          an account or server storage.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {savedAnalyses.map((savedAnalysis) => (
+        <div
+          key={savedAnalysis.id}
+          className="rounded-2xl border border-border bg-background px-4 py-4"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-medium text-foreground">
+                  {savedAnalysis.title}
+                </p>
+                {openedSavedAnalysisId === savedAnalysis.id ? (
+                  <Badge variant="outline">Open now</Badge>
+                ) : null}
+                <Badge variant="outline">
+                  {getSavedAnalysisModeLabel(savedAnalysis.saveMode)}
+                </Badge>
+              </div>
+              <p className="text-sm leading-7 text-muted-foreground">
+                Updated {formatSavedAnalysisTimestamp(savedAnalysis.updatedAt)} -
+                Risk score {savedAnalysis.riskScore}/100
+              </p>
+              <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                <span className="inline-flex items-center rounded-full border border-border bg-card px-3 py-1">
+                  PG {savedAnalysis.postgresVersion}
+                </span>
+                <span className="inline-flex items-center rounded-full border border-border bg-card px-3 py-1">
+                  {savedAnalysis.frameworkPreset}
+                </span>
+                <span className="inline-flex items-center rounded-full border border-border bg-card px-3 py-1">
+                  {toHeadingCase(savedAnalysis.tableSizeProfile)}
+                </span>
+              </div>
+              <p className="text-sm leading-7 text-muted-foreground">
+                {savedAnalysis.saveMode === "with-sql"
+                  ? "SQL is available when you reopen this local save."
+                  : "Summary-only save. The analysis can reopen without storing SQL."}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  onOpenSavedAnalysis(savedAnalysis);
+                }}
+              >
+                Open saved
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  onDeleteSavedAnalysis(savedAnalysis);
+                }}
+              >
+                Delete saved
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+            <span className="inline-flex items-center rounded-full border border-border bg-card px-3 py-1">
+              Critical {savedAnalysis.severityCounts.critical}
+            </span>
+            <span className="inline-flex items-center rounded-full border border-border bg-card px-3 py-1">
+              High {savedAnalysis.severityCounts.high}
+            </span>
+            <span className="inline-flex items-center rounded-full border border-border bg-card px-3 py-1">
+              Medium {savedAnalysis.severityCounts.medium}
+            </span>
+            <span className="inline-flex items-center rounded-full border border-border bg-card px-3 py-1">
+              Low {savedAnalysis.severityCounts.low}
+            </span>
+            <span className="inline-flex items-center rounded-full border border-border bg-card px-3 py-1">
+              Info {savedAnalysis.severityCounts.info}
+            </span>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 

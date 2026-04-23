@@ -323,13 +323,13 @@ export function CodeEditor({
   return (
     <div
       className={cn(
-        "min-h-[280px] overflow-hidden rounded-2xl border border-border bg-background sm:min-h-[420px]",
+        "min-h-[340px] overflow-hidden rounded-2xl border border-border bg-background transition focus-within:border-ring focus-within:ring-4 focus-within:ring-ring/15 sm:min-h-[460px]",
         className,
       )}
     >
       <div
         ref={editorHostRef}
-        className="h-full min-h-[280px] sm:min-h-[420px]"
+        className="h-full min-h-[340px] sm:min-h-[460px]"
       />
     </div>
   );

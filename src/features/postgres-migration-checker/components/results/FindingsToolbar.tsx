@@ -1,5 +1,6 @@
 "use client";
 
+import type { Ref } from "react";
 import { Search } from "lucide-react";
 import type { FindingCategory, FindingSeverity } from "../../types";
 import { Card } from "@/components/Card";
@@ -12,6 +13,8 @@ type FindingsToolbarProps = {
   availableCategories: readonly FindingCategory[];
   categoryFilter: FindingsCategoryFilter;
   filteredCount: number;
+  searchInputId: string;
+  searchInputRef?: Ref<HTMLInputElement>;
   searchTerm: string;
   severityFilter: FindingsSeverityFilter;
   showOnlyBlockingRisks: boolean;
@@ -58,6 +61,8 @@ export function FindingsToolbar({
   availableCategories,
   categoryFilter,
   filteredCount,
+  searchInputId,
+  searchInputRef,
   searchTerm,
   severityFilter,
   showOnlyBlockingRisks,
@@ -95,15 +100,24 @@ export function FindingsToolbar({
             <div className="flex h-11 items-center gap-2 rounded-2xl border border-border bg-card px-3">
               <Search className="size-4 text-muted-foreground" />
               <input
+                id={searchInputId}
+                ref={searchInputRef}
                 type="search"
                 value={searchTerm}
                 onChange={(event) => {
                   onSearchTermChange(event.target.value);
                 }}
                 placeholder="Search titles, objects, rules, or advice"
+                aria-describedby={`${searchInputId}-hint`}
                 className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
               />
             </div>
+            <p
+              id={`${searchInputId}-hint`}
+              className="text-sm leading-6 text-muted-foreground"
+            >
+              Press <kbd className="rounded border border-border bg-background px-2 py-0.5 font-mono text-xs">/</kbd> to focus this search when you are not typing in the editor.
+            </p>
           </label>
 
           <label className="space-y-2">

@@ -2,80 +2,169 @@
 
 ## Product promise
 
-Authos is a browser-first developer tools website. The first tool,
-`/tools/postgres-migration-safety-checker`, is intentionally scoped so that a
-developer can paste migration SQL and analyze it locally in the browser.
+Authos is a browser-first developer tools website. The PostgreSQL Migration
+Safety Checker is intentionally designed so migration SQL can be pasted,
+uploaded, analyzed, redacted, exported, and optionally saved locally without
+being uploaded to Authos.
 
-The privacy promise for the first tool is:
+Telemetry must preserve that promise.
 
-- no login required
-- no database connection required
-- no pasted SQL sent to a backend
-- no raw SQL sent to analytics
-- no raw SQL written to logs
+## Telemetry defaults
 
-## Current baseline
+- Production sends nothing unless both `NEXT_PUBLIC_ANALYTICS_VENDOR` and
+  `NEXT_PUBLIC_ANALYTICS_KEY` are configured.
+- Development logs sanitized events only.
+- Development also exposes an in-product `Analytics debug` panel that shows the
+  exact sanitized payloads emitted by the adapter.
+- The runtime sanitizer strips dangerous keys and projects every event into a
+  smaller allowlisted payload shape before anything is logged or sent.
 
-There is no implemented analytics pipeline in this repository today.
+## Exact event names
 
-The baseline still needs guardrails because future product telemetry could be
-added later. The absence of telemetry code today does not remove the need for a
-written policy.
+- `tool_page_opened`
+- `sample_loaded`
+- `analysis_completed`
+- `analysis_failed`
+- `report_exported`
+- `local_save_saved`
+- `local_save_opened`
+- `redaction_mode_enabled`
+- `settings_link_copied`
 
-## What is allowed
+## Allowed fields
 
-Safe product telemetry, if added later, should only capture coarse product
-signals such as:
+Only these fields may appear in emitted payloads:
 
-- page route viewed
-- tool opened
-- local analysis started
-- local analysis finished
-- count of findings by severity or category
-- anonymized app version and browser information
+- `toolId`
+- `timestamp`
+- `statementCountBucket`
+  Values: `0`, `1`, `2-5`, `6-20`, `21+`
+- `inputSizeBucket`
+  Values: `empty`, `small`, `medium`, `large`, `huge`
+- `findingCountBucket`
+  Values: `0`, `1`, `2-5`, `6-20`, `21+`
+- `severityCounts`
+- `categoriesPresent`
+- `postgresVersion`
+- `frameworkPreset`
+- `tableSizeProfile`
+- `parserMode`
+  Values: `parser`, `fallback`, `error`
+- `analysisDurationBucket`
+  Values: `<100ms`, `100-499ms`, `500-1999ms`, `2000-4999ms`, `5000ms+`
+- `exportActionType`
+  Values: `copy-markdown`, `download-markdown`, `download-html`,
+  `download-json`, `print`
+- `redactionModeEnabled`
+- `sampleUsed`
 
-These events must not include raw SQL, schema names, table names, column names,
-index names, connection strings, or migration contents unless the privacy model
-changes and is explicitly documented.
+## Forbidden fields
 
-## What is never allowed
+Telemetry must never contain:
 
-- raw pasted SQL
-- normalized SQL text
-- statement-by-statement SQL payloads
-- migration files
-- database credentials
-- connection URIs
-- internal schema or object names in logs or analytics payloads
+- Raw SQL
+- Uploaded file content
+- Uploaded filename
+- Table names
+- Column names
+- Constraint names
+- Index names
+- Secret previews
+- Report text
+- User clipboard content
+- Full error stacks containing SQL
+- Statement previews or report snippets
+- Object names from findings or statements
 
-## Logging rules
+## Runtime sanitizer behavior
 
-- Do not `console.log` raw user SQL in development helpers.
-- Do not send raw SQL to server actions, API routes, or external telemetry
-  services.
-- Do not include raw SQL in error messages that could be captured by monitoring
-  tools.
-- If debugging requires inspection, use synthetic fixtures committed to the repo
-  instead of user-provided input.
+The adapter drops obvious dangerous keys such as:
 
-## SSR and browser-local analysis
+- `sql`
+- `rawSql`
+- `normalizedSql`
+- `statementText`
+- `statementPreview`
+- `snippet`
+- `preview`
+- `sourceFilename`
+- `filename`
+- `uploadedFilename`
+- `fileContent`
+- `tableName`
+- `columnName`
+- `constraintName`
+- `indexName`
+- `objectName`
+- `secretPreview`
+- `reportText`
+- `clipboardText`
+- `stack`
+- `errorStack`
 
-Because the app uses Next.js App Router, some code can execute during server
-rendering. Browser-local analysis must stay isolated from SSR code paths.
+After dangerous keys are removed, each event is projected into an allowlisted
+schema so unexpected extra fields are discarded too.
 
-Guidelines:
+## Bucket thresholds
 
-- analyzer core should be pure and environment-agnostic
-- browser-only execution should live in client components or future workers
-- raw SQL should stay in browser memory for the local-only tool
+### Statement and finding count buckets
 
-## Environment flags
+- `0`
+- `1`
+- `2-5`
+- `6-20`
+- `21+`
 
-`.env.example` documents reserved flags for:
+### Input size bucket thresholds
 
-- site URL
-- future privacy-safe product telemetry enablement
-- future worker enablement for heavy client-side analysis
+Measured in SQL character count before emission:
 
-If telemetry is ever implemented, keep it disabled by default in local
-development until the event schema is reviewed against this document.
+- `empty`: `0`
+- `small`: `1-500`
+- `medium`: `501-3000`
+- `large`: `3001-12000`
+- `huge`: `12001+`
+
+### Analysis duration bucket thresholds
+
+- `<100ms`
+- `100-499ms`
+- `500-1999ms`
+- `2000-4999ms`
+- `5000ms+`
+
+## Vendor hook
+
+The adapter currently supports an optional browser hook vendor:
+
+- `NEXT_PUBLIC_ANALYTICS_VENDOR=window-hook`
+- `NEXT_PUBLIC_ANALYTICS_KEY=<public key>`
+
+When configured, the adapter will call:
+
+- `window.__AUTHOS_ANALYTICS__?.track(eventName, sanitizedPayload)`
+
+If the env vars are missing, production remains a no-op.
+
+## How to verify no SQL is sent
+
+1. Run the app in development with `pnpm dev`.
+2. Open the PostgreSQL Migration Safety Checker.
+3. Paste migration SQL that includes recognizable schema names or fake secrets.
+4. Trigger page open, sample load, analysis, export, local save, redaction mode,
+   and settings-link actions.
+5. Expand the in-product `Analytics debug` panel.
+6. Confirm the payloads contain only buckets, settings, counts, booleans, and
+   event metadata.
+7. Open the browser console and confirm the development logs match the
+   sanitized payloads in the panel.
+8. Search the emitted payloads for pasted SQL, table names, filenames, secrets,
+   snippets, or report text. None should appear.
+
+## Guardrails for future changes
+
+- Never pass raw SQL into the analytics adapter, even if the sanitizer would
+  remove it later.
+- Never log thrown error stacks from analysis failures if they might contain SQL.
+- Keep telemetry fields coarse and product-oriented.
+- Update this document whenever a new analytics event or field is introduced.

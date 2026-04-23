@@ -1,6 +1,5 @@
 import type {
   ConfidenceLevel,
-  DocumentationLink,
   Finding,
   FindingSeverity,
   MigrationStatement,
@@ -34,27 +33,24 @@ export type SecretRedactionMatch = {
 
 export const SECRET_DETECTION_RULE_ID = "PGM900_POSSIBLE_SECRET_IN_INPUT";
 
-const SECRET_DETECTION_DOCS: DocumentationLink[] = [
-  {
-    label: "How privacy works",
-    href: "/privacy",
-    description:
-      "Authos privacy details for the PostgreSQL Migration Safety Checker.",
-  },
-];
-
 function buildAssignmentReplacement(name: string, separator: string, marker: string) {
   return `${name}${separator}'${marker}'`;
 }
 
 function buildPasswordAssignmentPreview(match: RegExpExecArray) {
-  return buildAssignmentReplacement(match[1] ?? "password", match[2] ?? " = ", "REDACTED_PASSWORD");
+  return buildAssignmentReplacement(
+    match[1] ?? "password",
+    match[2] ?? " = ",
+    "[REDACTED_PASSWORD]",
+  );
 }
 
 function buildGenericAssignmentPreview(match: RegExpExecArray) {
   const secretName = match[1] ?? "token";
   const separator = match[2] ?? " = ";
-  const marker = `REDACTED_${secretName.replace(/[^A-Za-z0-9]+/g, "_").toUpperCase()}`;
+  const marker = `[REDACTED_${secretName
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .toUpperCase()}]`;
 
   return buildAssignmentReplacement(secretName, separator, marker);
 }
@@ -254,10 +250,10 @@ export function collectSecretRedactionMatches(text: string) {
 
   prioritizedMatches.sort((left, right) => {
     return (
-      left.startOffset - right.startOffset ||
       right.priority - left.priority ||
       getSeverityRank(right.severity) - getSeverityRank(left.severity) ||
       (right.endOffset - right.startOffset) - (left.endOffset - left.startOffset) ||
+      left.startOffset - right.startOffset ||
       left.id.localeCompare(right.id)
     );
   });
@@ -370,7 +366,7 @@ export function createSecretDetectionFindings({
       id: `${SECRET_DETECTION_RULE_ID}:${match.id}:${match.startOffset}:${index}`,
       ruleId: SECRET_DETECTION_RULE_ID,
       title: "Possible secret detected in migration input",
-      summary: `Detected ${match.label} near \`${match.redactedPreview}\`. The preview is redacted so the original value is not echoed back into the UI.`,
+      summary: `Detected ${match.label} near ${match.redactedPreview}. The preview is redacted so the original value is not echoed back into the UI.`,
       severity: match.severity,
       category: "security",
       statementIndex: resolveStatementIndexForOffset(statements, match.startOffset),
@@ -383,7 +379,7 @@ export function createSecretDetectionFindings({
         "Accidentally pasting secrets into migration review tooling increases exposure when findings, snippets, screenshots, or exported reports get shared with other people.",
       recommendedAction:
         "Remove the secret if it should not be in the migration, rotate it if it is real, and use redaction mode or Copy redacted SQL before sharing review artifacts.",
-      docsLinks: SECRET_DETECTION_DOCS,
+      docsLinks: [],
       confidence: match.confidence,
       tags: ["security", "secret-detection", match.id],
     };

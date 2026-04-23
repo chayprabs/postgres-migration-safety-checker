@@ -178,7 +178,10 @@ export function FindingDetail({
               <p className="text-sm font-medium text-foreground">
                 Redacted preview
               </p>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-6 text-foreground">
+              <pre
+                aria-label="Redacted secret preview"
+                className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-6 text-foreground"
+              >
                 <code>{finding.redactedPreview}</code>
               </pre>
             </div>
@@ -268,7 +271,10 @@ export function FindingDetail({
                 </div>
 
                 {primaryRecipe.sqlSnippet ? (
-                  <pre className="overflow-x-auto rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-6 text-foreground">
+                  <pre
+                    aria-label={`${primaryRecipe.title} SQL template`}
+                    className="overflow-x-auto rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-6 text-foreground"
+                  >
                     <code>{primaryRecipe.sqlSnippet}</code>
                   </pre>
                 ) : (
@@ -332,7 +338,10 @@ export function FindingDetail({
                   </Button>
                 </div>
 
-                <pre className="overflow-x-auto rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-6 text-foreground">
+                <pre
+                  aria-label={`${finding.safeRewrite.title} SQL template`}
+                  className="overflow-x-auto rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-6 text-foreground"
+                >
                   <code>{finding.safeRewrite.sql}</code>
                 </pre>
 

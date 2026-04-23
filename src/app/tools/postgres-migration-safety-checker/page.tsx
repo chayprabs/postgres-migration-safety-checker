@@ -10,7 +10,9 @@ import { SectionHeader } from "@/components/SectionHeader";
 import { buttonStyles } from "@/components/Button";
 import { postgresMigrationSafetyCheckerTool } from "@/config/tools";
 import {
+  LoadExampleButton,
   PostgresMigrationCheckerShell,
+  getPostgresMigrationSample,
   getPostgresMigrationCheckerStructuredData,
   postgresMigrationCheckerCatchCards,
   postgresMigrationCheckerFaqEntries,
@@ -27,6 +29,38 @@ const title =
 const description =
   "Paste a PostgreSQL migration and find risky ALTER TABLE, CREATE INDEX, constraint, rewrite, transaction, and data-loss operations before they lock production.";
 const canonical = getCanonicalUrl(postgresMigrationSafetyCheckerTool.href);
+const crawlableExampleDefinitions = [
+  {
+    sampleId: "unsafe-add-default-and-index",
+    title: "Unsafe add default and index",
+    problem:
+      "This combines an immediate required-column rollout with a blocking index build, so reviewers need to think about lock pressure and phased deployment instead of treating it like a tiny schema tweak.",
+  },
+  {
+    sampleId: "foreign-key-not-valid",
+    title: "Safe foreign key validation",
+    problem:
+      "This uses NOT VALID and a later validation step so the foreign key can be introduced more safely on a large existing table.",
+  },
+  {
+    sampleId: "transaction-unsafe-concurrent-index",
+    title: "Transaction-unsafe concurrent index",
+    problem:
+      "The SQL asks for CONCURRENTLY but still wraps the change in BEGIN and COMMIT, which breaks on PostgreSQL and often points to a framework-transaction mismatch.",
+  },
+  {
+    sampleId: "dangerous-drop-and-truncate",
+    title: "Dangerous drop/truncate",
+    problem:
+      "Both statements are operationally small to type but destructive in very different ways, so they should trigger rollback and retention questions immediately.",
+  },
+  {
+    sampleId: "enum-change",
+    title: "Enum change",
+    problem:
+      "Enum additions and renames can look harmless in SQL while still breaking mixed-version application nodes, workers, and validation layers during rollout.",
+  },
+] as const;
 
 export const metadata: Metadata = {
   title: {
@@ -46,6 +80,20 @@ export const metadata: Metadata = {
 
 export default function PostgresMigrationSafetyCheckerPage() {
   const structuredData = getPostgresMigrationCheckerStructuredData();
+  const crawlableExamples = crawlableExampleDefinitions
+    .map((example) => {
+      const sample = getPostgresMigrationSample(example.sampleId);
+
+      if (!sample) {
+        return null;
+      }
+
+      return {
+        ...example,
+        sample,
+      };
+    })
+    .filter((example): example is NonNullable<typeof example> => example !== null);
 
   return (
     <>
@@ -112,6 +160,48 @@ export default function PostgresMigrationSafetyCheckerPage() {
       <section className="border-b border-border">
         <Container className="py-10 sm:py-12">
           <PostgresMigrationCheckerShell />
+        </Container>
+      </section>
+
+      <section className="border-b border-border">
+        <Container className="py-12 sm:py-14">
+          <div className="space-y-6">
+            <SectionHeader
+              badge="Examples"
+              title="Crawlable migration examples you can load into the workspace"
+              description={
+                <p>
+                  These examples stay on the page for search engines and future
+                  readers, while each load button drops the exact SQL into the
+                  browser-local checker above.
+                </p>
+              }
+            />
+
+            <FeatureGrid columns={2}>
+              {crawlableExamples.map(({ problem, sample, sampleId, title }) => (
+                <Card key={sampleId} className="p-6">
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <h3 className="text-lg font-semibold">{title}</h3>
+                      <p className="text-sm leading-7 text-muted-foreground">
+                        {problem}
+                      </p>
+                    </div>
+
+                    <pre
+                      aria-label={`${title} example SQL snippet`}
+                      className="overflow-x-auto rounded-2xl border border-border bg-background px-4 py-4 text-xs leading-6 text-foreground"
+                    >
+                      <code>{sample.sql}</code>
+                    </pre>
+
+                    <LoadExampleButton sampleId={sampleId} />
+                  </div>
+                </Card>
+              ))}
+            </FeatureGrid>
+          </div>
         </Container>
       </section>
 

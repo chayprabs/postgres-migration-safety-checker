@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef } from "react";
 import type { Finding } from "../../types";
 import { Card } from "@/components/Card";
 import { FindingCard } from "./FindingCard";
@@ -21,15 +22,20 @@ export function FindingsList({
   onCopySafeRewrite,
   onSelectFinding,
 }: FindingsListProps) {
+  const viewDetailsRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  function focusFindingActionAtIndex(index: number) {
+    viewDetailsRefs.current[index]?.focus();
+  }
+
   if (totalFindings === 0) {
     return (
       <Card className="border border-border bg-background px-5 py-5">
         <p className="text-lg font-semibold text-foreground">
-          No obvious migration hazards found.
+          No obvious hazards found.
         </p>
         <p className="mt-3 text-sm leading-7 text-muted-foreground">
-          This does not guarantee production safety, but the checker did not detect
-          common locking, rewrite, destructive, or transaction risks in this SQL.
+          Still review table size, traffic, and deployment order.
         </p>
       </Card>
     );
@@ -58,16 +64,39 @@ export function FindingsList({
           Showing {findings.length} of {totalFindings}
         </p>
       </div>
+      <p className="text-sm leading-6 text-muted-foreground">
+        Use Tab to move through actions, or Arrow Up and Arrow Down on View
+        details buttons to move through findings faster.
+      </p>
 
-      <div className="space-y-3 xl:max-h-[920px] xl:overflow-y-auto xl:pr-1">
-        {findings.map((finding) => (
+      <div
+        aria-label="Findings list"
+        className="space-y-3 xl:max-h-[920px] xl:overflow-y-auto xl:pr-1"
+      >
+        {findings.map((finding, index) => (
           <FindingCard
             key={finding.id}
             canCopySafeRewrite={canCopySafeRewrite(finding)}
             finding={finding}
             isSelected={finding.id === selectedFindingId}
+            onViewDetailsKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                focusFindingActionAtIndex(
+                  Math.min(index + 1, findings.length - 1),
+                );
+              }
+
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                focusFindingActionAtIndex(Math.max(index - 1, 0));
+              }
+            }}
             onCopySafeRewrite={onCopySafeRewrite}
             onSelect={onSelectFinding}
+            viewDetailsRef={(node) => {
+              viewDetailsRefs.current[index] = node;
+            }}
           />
         ))}
       </div>

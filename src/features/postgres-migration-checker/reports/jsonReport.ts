@@ -4,6 +4,13 @@ import type { ExportedAnalysisResult, JsonReportDocument, ReportExportInput } fr
 function sanitizeAnalysisResult(input: ReportExportInput): ExportedAnalysisResult {
   return {
     ...input.result,
+    metadata: {
+      ...input.result.metadata,
+      parser: {
+        ...input.result.metadata.parser,
+        ast: undefined,
+      },
+    },
     statements: input.result.statements.map((statement) => ({
       index: statement.index,
       startOffset: statement.startOffset,

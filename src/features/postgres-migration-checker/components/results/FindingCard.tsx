@@ -1,5 +1,6 @@
 "use client";
 
+import type { KeyboardEventHandler, Ref } from "react";
 import type { ConfidenceLevel, Finding } from "../../types";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
@@ -12,6 +13,8 @@ type FindingCardProps = {
   isSelected: boolean;
   onCopySafeRewrite: (finding: Finding) => void;
   onSelect: (finding: Finding) => void;
+  onViewDetailsKeyDown?: KeyboardEventHandler<HTMLButtonElement>;
+  viewDetailsRef?: Ref<HTMLButtonElement>;
 };
 
 function getSeverityTone(severity: Finding["severity"]) {
@@ -53,6 +56,8 @@ export function FindingCard({
   isSelected,
   onCopySafeRewrite,
   onSelect,
+  onViewDetailsKeyDown,
+  viewDetailsRef,
 }: FindingCardProps) {
   return (
     <Card
@@ -68,6 +73,7 @@ export function FindingCard({
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <span
+                aria-label={`${finding.severity} severity`}
                 className={cn(
                   "inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium tracking-wide",
                   getSeverityTone(finding.severity),
@@ -94,9 +100,12 @@ export function FindingCard({
 
           <div className="flex flex-wrap gap-2">
             <Button
+              ref={viewDetailsRef}
               type="button"
               size="sm"
               variant={isSelected ? "primary" : "secondary"}
+              aria-pressed={isSelected}
+              onKeyDown={onViewDetailsKeyDown}
               onClick={() => {
                 onSelect(finding);
               }}

@@ -196,7 +196,10 @@ export function SafeRewritePanel({
                           <p className="text-sm font-medium text-foreground">
                             SQL template
                           </p>
-                          <pre className="overflow-x-auto rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-6 text-foreground">
+                          <pre
+                            aria-label={`${recipe.title} SQL template`}
+                            className="overflow-x-auto rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-6 text-foreground"
+                          >
                             <code>{recipe.sqlSnippet}</code>
                           </pre>
                         </div>
