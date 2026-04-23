@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Menu, X } from "lucide-react";
 import { usePathname } from "next/navigation";
-import { useId, useState } from "react";
+import { useState } from "react";
 import { buttonStyles } from "@/components/Button";
 import { Container } from "@/components/Container";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -13,7 +13,6 @@ import { headerNavigation, siteConfig } from "@/lib/site";
 export function SiteHeader() {
   const pathname = usePathname();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const signInHelpId = useId();
 
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur-xl">
@@ -50,22 +49,6 @@ export function SiteHeader() {
             </nav>
 
             <ThemeToggle />
-
-            <Link
-              href="#"
-              aria-disabled="true"
-              aria-describedby={signInHelpId}
-              title="Accounts are coming later. Tools work without login."
-              onClick={(event) => event.preventDefault()}
-              className={buttonStyles({
-                variant: "secondary",
-                size: "sm",
-                className:
-                  "cursor-not-allowed opacity-70 hover:bg-card hover:text-card-foreground",
-              })}
-            >
-              Sign in
-            </Link>
           </div>
 
           <div className="flex items-center gap-2 md:hidden">
@@ -82,10 +65,6 @@ export function SiteHeader() {
             </button>
           </div>
         </div>
-
-        <span id={signInHelpId} className="sr-only">
-          Accounts are coming later. Tools work without login.
-        </span>
 
         <div
           id="mobile-site-nav"
@@ -116,23 +95,6 @@ export function SiteHeader() {
                 );
               })}
             </nav>
-
-            <div className="mt-3 border-t border-border pt-3">
-              <Link
-                href="#"
-                aria-disabled="true"
-                aria-describedby={signInHelpId}
-                title="Accounts are coming later. Tools work without login."
-                onClick={(event) => event.preventDefault()}
-                className={buttonStyles({
-                  variant: "secondary",
-                  className:
-                    "w-full cursor-not-allowed justify-center opacity-70 hover:bg-card hover:text-card-foreground",
-                })}
-              >
-                Sign in
-              </Link>
-            </div>
           </div>
         </div>
       </Container>

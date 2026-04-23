@@ -1,6 +1,7 @@
 "use client";
 
 import type { AnalysisResult, AnalysisSettings } from "../../types";
+import { getUtf8ByteLength } from "../../inputProfile";
 import { runAnalysisPipeline } from "../analysisPipeline";
 
 type AnalyzeInput = {
@@ -12,6 +13,7 @@ type AnalyzeInput = {
 type PendingWorkerRequest = {
   reject: (reason?: unknown) => void;
   resolve: (value: AnalysisResult) => void;
+  timeoutId: number | null;
 };
 
 type AnalyzerWorkerResponse =
@@ -31,8 +33,40 @@ let workerUnavailableReason: string | null = null;
 let nextRequestId = 1;
 const pendingRequests = new Map<number, PendingWorkerRequest>();
 
-function terminateWorker(reason?: string) {
-  if (reason) {
+type AnalyzeExecutionOptions = {
+  allowMainThreadFallback?: boolean;
+  inputByteLength?: number;
+  workerTimeoutMs?: number;
+};
+
+function clearPendingWorkerRequest(requestId: number) {
+  const pendingRequest = pendingRequests.get(requestId);
+
+  if (!pendingRequest) {
+    return null;
+  }
+
+  if (pendingRequest.timeoutId !== null) {
+    window.clearTimeout(pendingRequest.timeoutId);
+  }
+
+  pendingRequests.delete(requestId);
+  return pendingRequest;
+}
+
+function getWorkerTimeoutMs(inputByteLength: number) {
+  if (inputByteLength > 1024 * 1024) {
+    return 15_000;
+  }
+
+  return 10_000;
+}
+
+function terminateWorker(
+  reason?: string,
+  { markUnavailable = false }: { markUnavailable?: boolean } = {},
+) {
+  if (reason && markUnavailable) {
     workerUnavailableReason = reason;
   }
 
@@ -42,6 +76,9 @@ function terminateWorker(reason?: string) {
   const error = new Error(reason ?? "The analysis worker became unavailable.");
 
   pendingRequests.forEach((request) => {
+    if (request.timeoutId !== null) {
+      window.clearTimeout(request.timeoutId);
+    }
     request.reject(error);
   });
   pendingRequests.clear();
@@ -67,13 +104,11 @@ function getAnalyzerWorker() {
 
     worker.onmessage = (event: MessageEvent<AnalyzerWorkerResponse>) => {
       const response = event.data;
-      const pendingRequest = pendingRequests.get(response.id);
+      const pendingRequest = clearPendingWorkerRequest(response.id);
 
       if (!pendingRequest) {
         return;
       }
-
-      pendingRequests.delete(response.id);
 
       if (response.ok) {
         pendingRequest.resolve(response.result);
@@ -86,7 +121,9 @@ function getAnalyzerWorker() {
     };
 
     worker.onerror = () => {
-      terminateWorker("The analysis worker failed and the checker fell back to the main thread.");
+      terminateWorker(
+        "The analysis worker failed and the checker fell back to the main thread.",
+      );
     };
 
     analyzerWorker = worker;
@@ -115,19 +152,47 @@ async function analyzeOnMainThread(
   });
 }
 
-export async function analyzeInWorkerOrMainThread(input: AnalyzeInput) {
+export async function analyzeInWorkerOrMainThread(
+  input: AnalyzeInput,
+  options: AnalyzeExecutionOptions = {},
+) {
   const worker = getAnalyzerWorker();
+  const allowMainThreadFallback = options.allowMainThreadFallback !== false;
 
   if (!worker) {
+    if (!allowMainThreadFallback) {
+      throw new Error(
+        workerUnavailableReason ??
+          "The analysis worker is unavailable for this migration size.",
+      );
+    }
+
     return analyzeOnMainThread(input, workerUnavailableReason ?? undefined);
   }
 
   const requestId = nextRequestId;
   nextRequestId += 1;
+  const inputByteLength = options.inputByteLength ?? getUtf8ByteLength(input.sql);
+  const workerTimeoutMs =
+    options.workerTimeoutMs ?? getWorkerTimeoutMs(inputByteLength);
 
   try {
     return await new Promise<AnalysisResult>((resolve, reject) => {
-      pendingRequests.set(requestId, { resolve, reject });
+      const timeoutId = window.setTimeout(() => {
+        const pendingRequest = clearPendingWorkerRequest(requestId);
+
+        if (!pendingRequest) {
+          return;
+        }
+
+        pendingRequest.reject(
+          new Error(
+            `The analysis worker timed out after ${Math.round(workerTimeoutMs / 1000)} seconds.`,
+          ),
+        );
+      }, workerTimeoutMs);
+
+      pendingRequests.set(requestId, { resolve, reject, timeoutId });
       worker.postMessage({
         id: requestId,
         sourceFilename: input.sourceFilename,
@@ -142,6 +207,11 @@ export async function analyzeInWorkerOrMainThread(input: AnalyzeInput) {
         : "The analysis worker failed and the checker fell back to the main thread.";
 
     terminateWorker(fallbackReason);
+
+    if (!allowMainThreadFallback) {
+      throw new Error(fallbackReason);
+    }
+
     return analyzeOnMainThread(input, fallbackReason);
   }
 }

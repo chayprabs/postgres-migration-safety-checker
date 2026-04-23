@@ -7,6 +7,7 @@ import {
   useEffect,
   useEffectEvent,
   useId,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -59,7 +60,10 @@ import {
   type TableSizeProfile,
   type TransactionAssumptionMode,
 } from "@/features/postgres-migration-checker";
-import { redactSecretsInText } from "../analyzer/security/secretDetection";
+import {
+  collectSecretRedactionMatches,
+  redactSecretsInText,
+} from "../analyzer/security/secretDetection";
 import {
   clearSavedLocalHistory,
   deleteSavedLocalAnalysis,
@@ -95,6 +99,14 @@ import {
   LOAD_POSTGRES_MIGRATION_SAMPLE_EVENT,
   type LoadPostgresMigrationSampleDetail,
 } from "../workspaceEvents";
+import {
+  canSafelyOverrideBlockedInput,
+  formatSqlInputSize,
+  getSqlInputProfile,
+  LARGE_INPUT_WARNING_MESSAGE,
+  type SqlInputExecutionSupport,
+  type SqlInputProfile,
+} from "../inputProfile";
 import { cn } from "@/lib/utils";
 
 type PersistedWorkspaceSettings = {
@@ -116,6 +128,10 @@ type StatusMessage = {
 
 type SaveDialogState = {
   title: string;
+};
+
+type AnalysisErrorState = {
+  message: string;
 };
 
 type CommandMenuCommand = {
@@ -165,6 +181,9 @@ const WORKSPACE_SETTINGS_STORAGE_KEY =
   "authos.postgres-migration-checker.workspace-settings.v1";
 const TOOL_ID = "postgres-migration-safety-checker";
 const STATUS_MESSAGE_TTL_MS = 3200;
+const AUTO_ANALYZE_DEBOUNCE_MS = 750;
+const ANALYZER_INTERNAL_ERROR_MESSAGE =
+  "The analyzer hit an internal error, so results may be incomplete. Your SQL was not uploaded. Try simplifying the migration or report this issue with a redacted sample.";
 const workspaceSettingsListeners = new Set<() => void>();
 let inMemoryWorkspaceSettings: PersistedWorkspaceSettings | null = null;
 
@@ -603,6 +622,104 @@ function buildAnalyticsSettingsSummary(
 
 function getOutputSqlSnippet(sqlSnippet: string, redactionMode: boolean) {
   return redactionMode ? redactSecretsInText(sqlSnippet) : sqlSnippet;
+}
+
+function getBrowserExecutionSupport(): SqlInputExecutionSupport {
+  if (typeof window === "undefined") {
+    return {
+      workerSupported: false,
+    };
+  }
+
+  const browserNavigator = window.navigator as Navigator & {
+    deviceMemory?: number;
+  };
+
+  return {
+    workerSupported: typeof Worker !== "undefined",
+    deviceMemory: browserNavigator.deviceMemory,
+    hardwareConcurrency: browserNavigator.hardwareConcurrency,
+  };
+}
+
+function getParserStatus(parser: AnalysisResult["metadata"]["parser"]) {
+  if (parser.ok && parser.parser === "supabase-pg-parser") {
+    return {
+      description:
+        "The PostgreSQL parser completed successfully for this run, so statement mapping and AST-backed checks are available.",
+      label: "Parsed with PostgreSQL parser",
+    };
+  }
+
+  if (parser.errors.length > 0) {
+    return {
+      description:
+        "The parser reported a syntax error, so the checker continued with fallback pattern analysis where possible.",
+      label: "Partial analysis due to parser error",
+    };
+  }
+
+  if (parser.parser === "fallback") {
+    return {
+      description:
+        "The checker used fallback pattern analysis for this run, so findings may be less precise than a full parser-backed review.",
+      label: "Used fallback pattern analysis",
+    };
+  }
+
+  return {
+    description:
+      "The parser did not run because the current editor input is empty.",
+    label: "No parser run",
+  };
+}
+
+function getLargeInputNotice(
+  profile: SqlInputProfile,
+  options: {
+    autoAnalyzeEnabled: boolean;
+    canOverrideBlockedLimit: boolean;
+  },
+) {
+  if (profile.bucket === "normal") {
+    return null;
+  }
+
+  const sizeLabel = formatSqlInputSize(profile.byteLength);
+
+  if (profile.bucket === "warning") {
+    return {
+      body: `${LARGE_INPUT_WARNING_MESSAGE} Current size: ${sizeLabel}.`,
+      title: "Performance warning",
+      tone: "warning" as const,
+    };
+  }
+
+  if (profile.bucket === "confirmation-required") {
+    const autoAnalyzeCopy = options.autoAnalyzeEnabled
+      ? "Auto analysis pauses at this size, and each run needs a manual confirmation first."
+      : "Each run needs a manual confirmation first.";
+
+    return {
+      body: `${LARGE_INPUT_WARNING_MESSAGE} Current size: ${sizeLabel}. ${autoAnalyzeCopy}`,
+      title: "Manual confirmation required",
+      tone: "warning" as const,
+    };
+  }
+
+  if (options.canOverrideBlockedLimit) {
+    return {
+      body: `${LARGE_INPUT_WARNING_MESSAGE} Current size: ${sizeLabel}. Analysis is blocked by default above 3 MB, but you can manually override with the worker path if this browser still feels stable.`,
+      title: "Blocked by default",
+      tone: "error" as const,
+    };
+  }
+
+  return {
+    body: `${LARGE_INPUT_WARNING_MESSAGE} Current size: ${sizeLabel}. Analysis is blocked by default above 3 MB in this browser. Use a CLI, CI job, or a local script instead.`,
+    title: "Blocked by default",
+    tone: "error" as const,
+  };
 }
 
 function isEditableShortcutTarget(target: EventTarget | null) {
@@ -1106,10 +1223,14 @@ export function PostgresMigrationCheckerShell() {
     readAnalyticsDebugEvents,
   );
   const [sql, setSql] = useState("");
+  const [sqlInputProfile, setSqlInputProfile] = useState<SqlInputProfile>(() =>
+    getSqlInputProfile(""),
+  );
   const [sourceFilename, setSourceFilename] = useState<string | null>(null);
   const [transactionAssumptionMode, setTransactionAssumptionMode] =
     useState<TransactionAssumptionMode>("auto");
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [analysisError, setAnalysisError] = useState<AnalysisErrorState | null>(null);
   const [openedSavedAnalysisId, setOpenedSavedAnalysisId] = useState<string | null>(
     null,
   );
@@ -1138,13 +1259,19 @@ export function PostgresMigrationCheckerShell() {
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [isExamplesOpen, setIsExamplesOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [lastAnalyzedSql, setLastAnalyzedSql] = useState("");
+  const [lastAnalyzedSampleUsed, setLastAnalyzedSampleUsed] = useState(false);
+  const [lastAnalyzedInputFingerprint, setLastAnalyzedInputFingerprint] =
+    useState("");
   const [lastAnalyzedSourceFilename, setLastAnalyzedSourceFilename] = useState<
     string | null
   >(null);
   const [lastAnalyzedSettingsSignature, setLastAnalyzedSettingsSignature] =
     useState("");
   const deferredSql = useDeferredValue(sql);
+  const hasLikelySecrets = useMemo(
+    () => collectSecretRedactionMatches(deferredSql).length > 0,
+    [deferredSql],
+  );
   const fileInputId = useId();
   const findingsSearchInputId = useId();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1154,6 +1281,15 @@ export function PostgresMigrationCheckerShell() {
   const examplesMenuRef = useRef<HTMLDivElement | null>(null);
   const findingsSearchInputRef = useRef<HTMLInputElement | null>(null);
   const findingDetailRef = useRef<HTMLDivElement | null>(null);
+  const latestAnalysisSnapshotRef = useRef<{
+    inputFingerprint: string;
+    settingsSignature: string;
+    sourceFilename: string | null;
+  }>({
+    inputFingerprint: "",
+    settingsSignature: "",
+    sourceFilename: null,
+  });
   const shareStateAppliedRef = useRef(false);
   const messageTimeoutsRef = useRef<Map<number, number>>(new Map());
   const statusIdRef = useRef(0);
@@ -1192,12 +1328,29 @@ export function PostgresMigrationCheckerShell() {
     transactionAssumptionMode,
     sourceFilename,
   );
-  const redactedSql = getOutputSqlSnippet(sql, true);
-  const hasRedactedCopy = redactedSql !== sql;
+  const browserExecutionSupport = getBrowserExecutionSupport();
+  const canOverrideBlockedLimit = canSafelyOverrideBlockedInput(
+    sqlInputProfile,
+    browserExecutionSupport,
+  );
+  const largeInputNotice = getLargeInputNotice(sqlInputProfile, {
+    autoAnalyzeEnabled: workspaceSettings.autoAnalyze,
+    canOverrideBlockedLimit,
+  });
+  const canAnalyzeCurrentInput =
+    sqlInputProfile.bucket !== "blocked" || canOverrideBlockedLimit;
+  const requiresManualConfirmation =
+    sqlInputProfile.bucket === "confirmation-required" ||
+    sqlInputProfile.bucket === "blocked";
+  const canAutoAnalyzeCurrentInput =
+    sqlInputProfile.bucket === "normal" || sqlInputProfile.bucket === "warning";
   const isViewingSavedAnalysis = openedSavedAnalysis !== null;
   const activeAnalysisResult =
     sql.trim().length === 0 && !isViewingSavedAnalysis ? null : analysisResult;
   const activeFrameworkMetadata = activeAnalysisResult?.metadata.framework ?? null;
+  const parserStatus = activeAnalysisResult
+    ? getParserStatus(activeAnalysisResult.metadata.parser)
+    : null;
   const activeResultLimitations =
     activeAnalysisResult?.metadata.limitations ?? [...POSTGRES_ANALYSIS_LIMITATIONS];
   const safeRewriteRecipeGroups = activeAnalysisResult?.safeRewriteRecipeGroups ?? [];
@@ -1266,23 +1419,35 @@ export function PostgresMigrationCheckerShell() {
     selectedFinding,
     activeFrameworkMetadata,
   );
+  const isAnalysisStale =
+    !isViewingSavedAnalysis &&
+    activeAnalysisResult !== null &&
+    (lastAnalyzedInputFingerprint !== sqlInputProfile.fingerprint ||
+      lastAnalyzedSourceFilename !== sourceFilename ||
+      lastAnalyzedSettingsSignature !== currentSettingsSignature);
+  const activeAnalysisSourceFilename =
+    activeAnalysisResult === null
+      ? sourceFilename
+      : isAnalysisStale
+        ? lastAnalyzedSourceFilename
+        : sourceFilename;
   const reportExportInput =
     activeAnalysisResult === null
       ? null
       : ({
           findings: visibleFindings,
           frameworkLabel: activeAnalysisResult.metadata.framework.label,
-          frameworkPreset: workspaceSettings.frameworkPreset,
+          frameworkPreset: activeAnalysisResult.settings.frameworkPreset,
           options: {
             includeSqlSnippets: includeSqlSnippetsInReport,
             redactionMode: workspaceSettings.redactionMode,
-            sourceFilename,
+            sourceFilename: activeAnalysisSourceFilename,
           },
           parserDiagnostics,
-          postgresVersion: workspaceSettings.postgresVersion,
+          postgresVersion: activeAnalysisResult.settings.postgresVersion,
           recipeGroups: visibleSafeRewriteRecipeGroups,
           result: activeAnalysisResult,
-          tableSizeProfile: workspaceSettings.tableSizeProfile,
+          tableSizeProfile: activeAnalysisResult.settings.tableSizeProfile,
           viewFilters: {
             categoryFilter,
             resultsTab,
@@ -1295,17 +1460,16 @@ export function PostgresMigrationCheckerShell() {
         } satisfies ReportExportInput);
   const markdownReportText =
     reportExportInput === null ? "" : createMarkdownReport(reportExportInput);
-  const reportFilenames = getReportFilenames(sourceFilename);
-  const isAnalysisStale =
-    !isViewingSavedAnalysis &&
-    activeAnalysisResult !== null &&
-    (lastAnalyzedSql.trim() !== sql.trim() ||
-      lastAnalyzedSourceFilename !== sourceFilename ||
-      lastAnalyzedSettingsSignature !== currentSettingsSignature);
   const sampleUsed = selectedSampleId !== null;
+  const activeAnalysisSampleUsed = activeAnalysisResult
+    ? lastAnalyzedSampleUsed
+    : sampleUsed;
+  const reportFilenames = getReportFilenames(activeAnalysisSourceFilename);
   const canSaveLocally = activeAnalysisResult !== null;
-  const parserUsedFallback =
-    activeAnalysisResult?.metadata.parser.parser === "fallback";
+  const canSaveCurrentSqlLocally =
+    canSaveLocally && !isAnalysisStale && sql.trim().length > 0;
+  const staleResultMessage =
+    "The editor or review settings changed after the last completed run. Findings and exports below still reflect the previous analysis until you run it again.";
   const hasTransientUiOpen =
     isCommandMenuOpen ||
     isExamplesOpen ||
@@ -1316,9 +1480,23 @@ export function PostgresMigrationCheckerShell() {
     saveDialogState !== null;
   const saveDialogSuggestedTitle = getSuggestedSavedAnalysisTitle(
     activeAnalysisResult,
-    sql,
-    sourceFilename,
+    canSaveCurrentSqlLocally ? sql : "",
+    activeAnalysisSourceFilename,
   );
+
+  const applySqlInput = useCallback((nextSql: string) => {
+    setSql(nextSql);
+    setSqlInputProfile(getSqlInputProfile(nextSql));
+    setAnalysisError(null);
+  }, []);
+
+  useEffect(() => {
+    latestAnalysisSnapshotRef.current = {
+      inputFingerprint: sqlInputProfile.fingerprint,
+      settingsSignature: currentSettingsSignature,
+      sourceFilename,
+    };
+  }, [currentSettingsSignature, sourceFilename, sqlInputProfile.fingerprint]);
 
   useEffect(() => {
     const activeTimeouts = messageTimeoutsRef.current;
@@ -1450,10 +1628,28 @@ export function PostgresMigrationCheckerShell() {
       usedSample: boolean,
     ) => {
       const trimmedSql = sqlToAnalyze.trim();
+      const inputProfileForRun = getSqlInputProfile(sqlToAnalyze);
+      const settingsSignatureForRun = getWorkspaceSettingsSignature(
+        settingsToUse,
+        transactionAssumptionMode,
+        nextSourceFilename,
+      );
+
+      const isLatestSnapshotStillCurrent = () => {
+        const latestSnapshot = latestAnalysisSnapshotRef.current;
+
+        return (
+          latestSnapshot.inputFingerprint === inputProfileForRun.fingerprint &&
+          latestSnapshot.sourceFilename === nextSourceFilename &&
+          latestSnapshot.settingsSignature === settingsSignatureForRun
+        );
+      };
 
       if (trimmedSql.length === 0) {
         setAnalysisResult(null);
-        setLastAnalyzedSql("");
+        setAnalysisError(null);
+        setLastAnalyzedSampleUsed(false);
+        setLastAnalyzedInputFingerprint("");
         setLastAnalyzedSourceFilename(null);
         setLastAnalyzedSettingsSignature("");
         return;
@@ -1462,6 +1658,7 @@ export function PostgresMigrationCheckerShell() {
       const requestId = analysisRequestIdRef.current + 1;
       analysisRequestIdRef.current = requestId;
       setIsAnalyzing(true);
+      setAnalysisError(null);
 
       try {
         const result = await analyzeInWorkerOrMainThread({
@@ -1471,9 +1668,15 @@ export function PostgresMigrationCheckerShell() {
             settingsToUse,
             transactionAssumptionMode,
           ),
+        }, {
+          allowMainThreadFallback: inputProfileForRun.bucket !== "blocked",
+          inputByteLength: inputProfileForRun.byteLength,
         });
 
-        if (analysisRequestIdRef.current !== requestId) {
+        if (
+          analysisRequestIdRef.current !== requestId ||
+          !isLatestSnapshotStillCurrent()
+        ) {
           return;
         }
 
@@ -1494,31 +1697,30 @@ export function PostgresMigrationCheckerShell() {
 
         startTransition(() => {
           setAnalysisResult(result);
-          setLastAnalyzedSql(sqlToAnalyze);
+          setAnalysisError(null);
+          setLastAnalyzedSampleUsed(usedSample);
+          setLastAnalyzedInputFingerprint(inputProfileForRun.fingerprint);
           setLastAnalyzedSourceFilename(nextSourceFilename);
-          setLastAnalyzedSettingsSignature(
-            getWorkspaceSettingsSignature(
-              settingsToUse,
-              transactionAssumptionMode,
-              nextSourceFilename,
-            ),
-          );
+          setLastAnalyzedSettingsSignature(settingsSignatureForRun);
         });
       } catch {
+        if (
+          analysisRequestIdRef.current !== requestId ||
+          !isLatestSnapshotStillCurrent()
+        ) {
+          return;
+        }
+
         trackAnalysisFailed({
           toolId: TOOL_ID,
           inputLength: sqlToAnalyze.length,
           sampleUsed: usedSample,
           settingsSummary: buildAnalyticsSettingsSummary(settingsToUse),
         });
-        setAnalysisResult(null);
-        pushStatus(
-          "Analysis failed before a safe result could be generated. Try adjusting the SQL or settings.",
-          "error",
-        );
-        setLastAnalyzedSql("");
-        setLastAnalyzedSourceFilename(null);
-        setLastAnalyzedSettingsSignature("");
+        setAnalysisError({
+          message: ANALYZER_INTERNAL_ERROR_MESSAGE,
+        });
+        pushStatus("Analysis hit an internal error.", "error");
       } finally {
         if (analysisRequestIdRef.current === requestId) {
           setIsAnalyzing(false);
@@ -1529,7 +1731,11 @@ export function PostgresMigrationCheckerShell() {
   );
 
   useEffect(() => {
-    if (!workspaceSettings.autoAnalyze || deferredSql.trim().length === 0) {
+    if (
+      !workspaceSettings.autoAnalyze ||
+      deferredSql.trim().length === 0 ||
+      !canAutoAnalyzeCurrentInput
+    ) {
       return;
     }
 
@@ -1540,12 +1746,19 @@ export function PostgresMigrationCheckerShell() {
         sourceFilename,
         sampleUsed,
       );
-    }, 120);
+    }, AUTO_ANALYZE_DEBOUNCE_MS);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [deferredSql, runAnalysis, sampleUsed, sourceFilename, workspaceSettings]);
+  }, [
+    canAutoAnalyzeCurrentInput,
+    deferredSql,
+    runAnalysis,
+    sampleUsed,
+    sourceFilename,
+    workspaceSettings,
+  ]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1674,7 +1887,8 @@ export function PostgresMigrationCheckerShell() {
   }
 
   function handleEditorChange(nextSql: string) {
-    setSql(nextSql);
+    applySqlInput(nextSql);
+    setSelectedSampleId(null);
     setOpenedSavedAnalysisId(null);
   }
 
@@ -1685,7 +1899,7 @@ export function PostgresMigrationCheckerShell() {
   }
 
   function loadSampleIntoWorkspace(sample: PostgresMigrationSample) {
-    setSql(sample.sql);
+    applySqlInput(sample.sql);
     setSourceFilename(null);
     setSelectedSampleId(sample.id);
     setOpenedSavedAnalysisId(null);
@@ -1743,8 +1957,47 @@ export function PostgresMigrationCheckerShell() {
     setIsExamplesOpen(true);
   }
 
+  function confirmManualAnalysisForCurrentInput() {
+    if (!requiresManualConfirmation) {
+      return true;
+    }
+
+    if (sqlInputProfile.bucket === "confirmation-required") {
+      const autoAnalyzePauseNote = workspaceSettings.autoAnalyze
+        ? " Auto analysis is paused at this size."
+        : "";
+
+      return window.confirm(
+        `This migration is ${formatSqlInputSize(sqlInputProfile.byteLength)}. Browser analysis may be slower.${autoAnalyzePauseNote} Do you want to run a local analysis anyway?`,
+      );
+    }
+
+    if (!canAnalyzeCurrentInput) {
+      pushStatus(
+        "This migration is too large for browser analysis here. Use a CLI, CI job, or a local script instead.",
+        "error",
+      );
+      return false;
+    }
+
+    return window.confirm(
+      `This migration is ${formatSqlInputSize(sqlInputProfile.byteLength)} and is blocked by default above 3 MB. The checker will try the worker path only and may still time out. Do you want to run a local analysis anyway?`,
+    );
+  }
+
   function handleRunAnalysisNow() {
-    if (sql.trim().length === 0 || isAnalyzing) {
+    if (sql.trim().length === 0 || !canAnalyzeCurrentInput) {
+      if (sql.trim().length > 0 && !canAnalyzeCurrentInput) {
+        pushStatus(
+          "This migration is too large for browser analysis here. Use a CLI, CI job, or a local script instead.",
+          "error",
+        );
+      }
+
+      return;
+    }
+
+    if (!confirmManualAnalysisForCurrentInput()) {
       return;
     }
 
@@ -1812,12 +2065,20 @@ export function PostgresMigrationCheckerShell() {
       return;
     }
 
+    if (includeSql && !canSaveCurrentSqlLocally) {
+      pushStatus(
+        "Re-run analysis before saving SQL so the stored SQL matches the visible findings.",
+        "error",
+      );
+      return;
+    }
+
     const savedAnalysis = saveLocalAnalysis({
       analysisResult: activeAnalysisResult,
       includeSql,
       redactionMode: workspaceSettings.redactionMode,
-      sourceFilename,
-      sql,
+      sourceFilename: activeAnalysisSourceFilename,
+      sql: includeSql ? sql : "",
       title: saveDialogState?.title,
     });
 
@@ -1827,7 +2088,7 @@ export function PostgresMigrationCheckerShell() {
     trackLocalSaveSaved({
       toolId: TOOL_ID,
       redactionModeEnabled: workspaceSettings.redactionMode,
-      sampleUsed,
+      sampleUsed: activeAnalysisSampleUsed,
     });
     pushStatus(
       includeSql
@@ -1851,16 +2112,20 @@ export function PostgresMigrationCheckerShell() {
 
     writePersistedWorkspaceSettings(nextWorkspaceSettings);
     setTransactionAssumptionMode(nextTransactionAssumptionMode);
-    setSql(savedAnalysis.sqlInput ?? "");
+    applySqlInput(savedAnalysis.sqlInput ?? "");
     setSourceFilename(savedAnalysis.sourceFilename ?? null);
     setSelectedSampleId(null);
     setSelectedFindingId(null);
     setAnalysisResult(
       (savedAnalysis.analysisResult as AnalysisResult | undefined) ?? null,
     );
+    setAnalysisError(null);
     setOpenedSavedAnalysisId(savedAnalysis.id);
     setIsSavedHistoryOpen(false);
-    setLastAnalyzedSql(savedAnalysis.sqlInput ?? "");
+    setLastAnalyzedSampleUsed(false);
+    setLastAnalyzedInputFingerprint(
+      getSqlInputProfile(savedAnalysis.sqlInput ?? "").fingerprint,
+    );
     setLastAnalyzedSourceFilename(savedAnalysis.sourceFilename ?? null);
     setLastAnalyzedSettingsSignature(
       getWorkspaceSettingsSignature(
@@ -1896,7 +2161,8 @@ export function PostgresMigrationCheckerShell() {
       if (!savedAnalysis.sqlInput) {
         setAnalysisResult(null);
         setSourceFilename(null);
-        setLastAnalyzedSql("");
+        setLastAnalyzedSampleUsed(false);
+        setLastAnalyzedInputFingerprint("");
         setLastAnalyzedSourceFilename(null);
         setLastAnalyzedSettingsSignature("");
       }
@@ -1920,7 +2186,8 @@ export function PostgresMigrationCheckerShell() {
     if (sql.trim().length === 0) {
       setAnalysisResult(null);
       setSourceFilename(null);
-      setLastAnalyzedSql("");
+      setLastAnalyzedSampleUsed(false);
+      setLastAnalyzedInputFingerprint("");
       setLastAnalyzedSourceFilename(null);
       setLastAnalyzedSettingsSignature("");
     }
@@ -1936,10 +2203,11 @@ export function PostgresMigrationCheckerShell() {
         return;
       }
 
-      setSql(clipboardText);
+      applySqlInput(clipboardText);
       setSourceFilename(null);
       setSelectedSampleId(null);
       setOpenedSavedAnalysisId(null);
+      setSelectedFindingId(null);
     } catch {
       pushStatus("Could not read clipboard. Paste manually instead.", "error");
     }
@@ -1949,6 +2217,9 @@ export function PostgresMigrationCheckerShell() {
     if (sql.trim().length === 0) {
       return;
     }
+
+    const redactedSql = redactSecretsInText(sql);
+    const hasRedactedCopy = redactedSql !== sql;
 
     try {
       await navigator.clipboard.writeText(redactedSql);
@@ -1967,9 +2238,13 @@ export function PostgresMigrationCheckerShell() {
       return;
     }
 
-    setSql(redactedSql);
+    const redactedSql = redactSecretsInText(sql);
+    const hasRedactedCopy = redactedSql !== sql;
+
+    applySqlInput(redactedSql);
     setOpenedSavedAnalysisId(null);
     setSelectedSampleId(null);
+    setSelectedFindingId(null);
     pushStatus(
       hasRedactedCopy
         ? "Replaced editor contents with the redacted copy"
@@ -1988,7 +2263,7 @@ export function PostgresMigrationCheckerShell() {
         toolId: TOOL_ID,
         format: "markdown",
         redactionModeEnabled: workspaceSettings.redactionMode,
-        sampleUsed,
+        sampleUsed: activeAnalysisSampleUsed,
       });
       pushStatus("Copied Markdown report");
     } catch {
@@ -2010,7 +2285,7 @@ export function PostgresMigrationCheckerShell() {
       toolId: TOOL_ID,
       exportActionType: "download-markdown",
       redactionModeEnabled: workspaceSettings.redactionMode,
-      sampleUsed,
+      sampleUsed: activeAnalysisSampleUsed,
     });
     pushStatus(`Downloaded ${reportFilenames.markdown}`);
   }
@@ -2029,7 +2304,7 @@ export function PostgresMigrationCheckerShell() {
       toolId: TOOL_ID,
       exportActionType: "download-html",
       redactionModeEnabled: workspaceSettings.redactionMode,
-      sampleUsed,
+      sampleUsed: activeAnalysisSampleUsed,
     });
     pushStatus(`Downloaded ${reportFilenames.html}`);
   }
@@ -2048,7 +2323,7 @@ export function PostgresMigrationCheckerShell() {
       toolId: TOOL_ID,
       exportActionType: "download-json",
       redactionModeEnabled: workspaceSettings.redactionMode,
-      sampleUsed,
+      sampleUsed: activeAnalysisSampleUsed,
     });
     pushStatus(`Downloaded ${reportFilenames.json}`);
   }
@@ -2065,7 +2340,7 @@ export function PostgresMigrationCheckerShell() {
         toolId: TOOL_ID,
         exportActionType: "print",
         redactionModeEnabled: workspaceSettings.redactionMode,
-        sampleUsed,
+        sampleUsed: activeAnalysisSampleUsed,
       });
       pushStatus("Opened printable report");
       return;
@@ -2209,24 +2484,31 @@ export function PostgresMigrationCheckerShell() {
 
     try {
       const fileContents = await file.text();
-      setSql(fileContents);
+      applySqlInput(fileContents);
       setSourceFilename(file.name);
       setSelectedSampleId(null);
       setOpenedSavedAnalysisId(null);
+      setSelectedFindingId(null);
       pushStatus(`Uploaded ${file.name} locally`);
+    } catch {
+      pushStatus(
+        `Could not read ${file.name}. Try a UTF-8 .sql file.`,
+        "error",
+      );
     } finally {
       event.target.value = "";
     }
   }
 
   function handleClearInput() {
-    setSql("");
+    applySqlInput("");
     setSourceFilename(null);
     setSelectedSampleId(null);
     setOpenedSavedAnalysisId(null);
     setSelectedFindingId(null);
     setAnalysisResult(null);
-    setLastAnalyzedSql("");
+    setLastAnalyzedSampleUsed(false);
+    setLastAnalyzedInputFingerprint("");
     setLastAnalyzedSourceFilename(null);
     setLastAnalyzedSettingsSignature("");
     pushStatus("Cleared input");
@@ -2256,11 +2538,13 @@ export function PostgresMigrationCheckerShell() {
       description: "Run the checker immediately on the current SQL.",
       shortcut: SHORTCUT_LABELS.analyze,
       keywords: ["run", "analyze", "check"],
-      disabled: sql.trim().length === 0 || isAnalyzing,
+      disabled: sql.trim().length === 0 || !canAnalyzeCurrentInput,
       disabledReason:
         sql.trim().length === 0
           ? "Paste or load SQL before running analysis."
-          : "Analysis is already running.",
+          : !canAnalyzeCurrentInput
+            ? "This migration is above the browser-safe limit here. Use CLI, CI, or a local script instead."
+            : undefined,
       onSelect: handleRunAnalysisNow,
     },
     {
@@ -2976,7 +3260,7 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                     with a redacted copy.
                   </p>
                   <Badge variant="outline">
-                    {hasRedactedCopy
+                    {hasLikelySecrets
                       ? "Likely secrets can be redacted"
                       : "No likely secrets detected yet"}
                   </Badge>
@@ -2987,6 +3271,22 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                     You opened a summary-only local save. SQL was not stored, so
                     this editor remains blank until you paste or load a
                     migration.
+                  </div>
+                ) : null}
+                {largeInputNotice ? (
+                  <div
+                    role="status"
+                    className={cn(
+                      "rounded-2xl border px-4 py-4",
+                      largeInputNotice.tone === "error"
+                        ? "border-[color:oklch(0.76_0.12_27)] bg-[color:oklch(0.98_0.02_27)] text-[color:oklch(0.44_0.11_27)] dark:border-[color:oklch(0.52_0.13_27)] dark:bg-[color:oklch(0.24_0.03_27)] dark:text-[color:oklch(0.86_0.04_27)]"
+                        : "border-border bg-background text-foreground",
+                    )}
+                  >
+                    <p className="text-sm font-medium">{largeInputNotice.title}</p>
+                    <p className="mt-2 text-sm leading-7 opacity-90">
+                      {largeInputNotice.body}
+                    </p>
                   </div>
                 ) : null}
               </div>
@@ -3061,6 +3361,20 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
               <div className="space-y-5 p-6">
                 {activeAnalysisResult ? (
                   <>
+                    {analysisError ? (
+                      <div
+                        role="alert"
+                        className="rounded-2xl border border-[color:oklch(0.76_0.12_27)] bg-[color:oklch(0.98_0.02_27)] px-4 py-4 text-[color:oklch(0.44_0.11_27)] dark:border-[color:oklch(0.52_0.13_27)] dark:bg-[color:oklch(0.24_0.03_27)] dark:text-[color:oklch(0.86_0.04_27)]"
+                      >
+                        <p className="text-sm font-medium text-current">
+                          Analyzer warning
+                        </p>
+                        <p className="mt-2 text-sm leading-7 text-current">
+                          {analysisError.message}
+                        </p>
+                      </div>
+                    ) : null}
+
                     {openedSavedAnalysis ? (
                       <div className="rounded-2xl border border-border bg-background px-4 py-4">
                         <p className="text-sm font-medium text-foreground">
@@ -3074,16 +3388,31 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                       </div>
                     ) : null}
 
-                    {parserUsedFallback ? (
+                    {isAnalysisStale ? (
                       <div
                         role="status"
                         className="rounded-2xl border border-border bg-background px-4 py-4"
                       >
                         <p className="text-sm font-medium text-foreground">
-                          Parser fallback notice
+                          Results are stale
                         </p>
                         <p className="mt-2 text-sm leading-7 text-muted-foreground">
-                          We could not fully parse this SQL, so the checker used fallback pattern analysis. Findings may be less precise.
+                          {staleResultMessage}
+                        </p>
+                      </div>
+                    ) : null}
+
+                    {parserStatus &&
+                    parserStatus.label !== "Parsed with PostgreSQL parser" ? (
+                      <div
+                        role="status"
+                        className="rounded-2xl border border-border bg-background px-4 py-4"
+                      >
+                        <p className="text-sm font-medium text-foreground">
+                          {parserStatus.label}
+                        </p>
+                        <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                          {parserStatus.description}
                         </p>
                       </div>
                     ) : null}
@@ -3231,6 +3560,11 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                       </div>
                     )}
                   </>
+                ) : analysisError ? (
+                  <EmptyStateCard
+                    title="Analyzer warning"
+                    body={analysisError.message}
+                  />
                 ) : sql.trim().length === 0 ? (
                   <EmptyStateCard
                     title="Paste SQL, upload a .sql file, or load an example"
@@ -3241,10 +3575,29 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                     title="Running local analysis"
                     body="The checker is reviewing the current SQL in your browser-local workspace."
                   />
+                ) : requiresManualConfirmation ? (
+                  <EmptyStateCard
+                    title={
+                      sqlInputProfile.bucket === "blocked"
+                        ? "Manual override required for this input size"
+                        : "Manual analysis confirmation required"
+                    }
+                    body={
+                      sqlInputProfile.bucket === "blocked"
+                        ? canAnalyzeCurrentInput
+                          ? "This migration is above the default browser-safe limit, so auto analysis stays off and each run must be confirmed manually."
+                          : "This migration is above the browser-safe limit for this device. Use a CLI, CI job, or a local script instead."
+                        : "This migration is large enough that auto analysis stays off until you confirm a manual run."
+                    }
+                  />
                 ) : activeAnalysisResult === null ? (
                   <EmptyStateCard
                     title="Analysis is ready when you are"
-                    body="Auto analyze is off right now, so use the button below once your migration text is in place."
+                    body={
+                      workspaceSettings.autoAnalyze
+                        ? "The checker is ready for a manual run and will keep results local to this browser."
+                        : "Auto analyze is off right now, so use the button below once your migration text is in place."
+                    }
                   />
                 ) : null}
 
@@ -3287,9 +3640,9 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                       type="button"
                       title={`Analyze now (${SHORTCUT_LABELS.analyze})`}
                       onClick={handleRunAnalysisNow}
-                      disabled={sql.trim().length === 0 || isAnalyzing}
+                      disabled={sql.trim().length === 0 || !canAnalyzeCurrentInput}
                     >
-                      {isAnalyzing ? "Analyzing..." : "Run local analysis"}
+                      {isAnalyzing ? "Analyze latest SQL" : "Run local analysis"}
                     </Button>
                     <Button
                       type="button"
@@ -3351,6 +3704,12 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
                     <p className="text-sm leading-7 text-muted-foreground">
                       Run analysis before copying a report.
                     </p>
+                  ) : isAnalysisStale ? (
+                    <p className="text-sm leading-7 text-muted-foreground">
+                      Exports still reflect the last completed analysis. Re-run
+                      first if you want the report to match the current editor or
+                      review settings.
+                    </p>
                   ) : null}
                 </div>
               </div>
@@ -3393,9 +3752,9 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
             className="flex-1"
             title={`Analyze now (${SHORTCUT_LABELS.analyze})`}
             onClick={handleRunAnalysisNow}
-            disabled={sql.trim().length === 0 || isAnalyzing}
+            disabled={sql.trim().length === 0 || !canAnalyzeCurrentInput}
           >
-            {isAnalyzing ? "Analyzing..." : "Analyze"}
+            {isAnalyzing ? "Analyze latest SQL" : "Analyze"}
           </Button>
           <Button
             type="button"
@@ -3429,6 +3788,14 @@ CREATE INDEX CONCURRENTLY idx_users_status ON users(status);"
       />
 
       <SaveLocalAnalysisDialog
+        canSaveWithSql={canSaveCurrentSqlLocally}
+        saveWithSqlHelp={
+          isAnalysisStale
+            ? "Run analysis again before saving SQL so the saved SQL matches the visible findings."
+            : sql.trim().length === 0
+              ? "Paste or load SQL before choosing the save-with-SQL option."
+              : "Save with SQL is ready."
+        }
         state={saveDialogState}
         onClose={handleCloseSaveDialog}
         onSaveSummaryOnly={() => {
@@ -4100,12 +4467,16 @@ function AnalyticsDebugPanel({
 }
 
 function SaveLocalAnalysisDialog({
+  canSaveWithSql,
+  saveWithSqlHelp,
   state,
   onClose,
   onSaveSummaryOnly,
   onSaveWithSql,
   onTitleChange,
 }: {
+  canSaveWithSql: boolean;
+  saveWithSqlHelp: string;
   state: SaveDialogState | null;
   onClose: () => void;
   onSaveSummaryOnly: () => void;
@@ -4165,17 +4536,34 @@ function SaveLocalAnalysisDialog({
           </p>
         </div>
 
+        <p className="text-sm leading-7 text-muted-foreground">
+          Summary-only saves avoid storing raw SQL. Save with SQL is optional and
+          should only be used when you intentionally want this browser profile to
+          retain the migration text.
+        </p>
+
         <div className="flex flex-wrap gap-3">
-          <Button type="button" onClick={onSaveWithSql}>
-            Save with SQL
-          </Button>
-          <Button type="button" variant="secondary" onClick={onSaveSummaryOnly}>
+          <Button type="button" onClick={onSaveSummaryOnly}>
             Save summary only
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onSaveWithSql}
+            disabled={!canSaveWithSql}
+          >
+            Save with SQL
           </Button>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
         </div>
+
+        {!canSaveWithSql ? (
+          <p className="text-sm leading-7 text-muted-foreground">
+            {saveWithSqlHelp}
+          </p>
+        ) : null}
       </div>
     </ModalShell>
   );
@@ -4324,7 +4712,7 @@ function StatusMessageStack({
   return (
     <div
       aria-live="polite"
-      className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-full max-w-sm flex-col gap-2 px-4"
+      className="pointer-events-none fixed bottom-24 right-4 z-50 flex w-full max-w-sm flex-col gap-2 px-4 xl:bottom-4"
     >
       {messages.map((message) => (
         <div

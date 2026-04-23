@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Lock, MonitorSmartphone, Wrench } from "lucide-react";
 import { Badge } from "@/components/Badge";
@@ -18,6 +19,20 @@ import {
   postgresMigrationCheckerBrowserPromises,
   postgresMigrationCheckerChecks,
 } from "@/features/postgres-migration-checker";
+import { buildPageMetadata } from "@/lib/metadata";
+
+export const metadata: Metadata = buildPageMetadata({
+  title: "Authos",
+  description:
+    "Browser-first developer tools for safer shipping, with a local-first PostgreSQL Migration Safety Checker and supporting migration docs.",
+  path: "/",
+  keywords: [
+    "Authos",
+    "PostgreSQL migration safety checker",
+    "developer tools",
+    "local-first tools",
+  ],
+});
 
 const localFirstSignals = [
   {

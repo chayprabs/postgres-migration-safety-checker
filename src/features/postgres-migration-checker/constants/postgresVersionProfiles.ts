@@ -1,6 +1,6 @@
 import type { DocumentationLink, PostgresVersion } from "../types";
 
-export type ProfiledPostgresVersion = 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18;
+export type ProfiledPostgresVersion = 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18;
 
 type PostgresVersionProfileTemplate = {
   version: ProfiledPostgresVersion;
@@ -29,6 +29,19 @@ const VERSIONING_POLICY_LINK: DocumentationLink = {
 };
 
 const PROFILE_TEMPLATES = [
+  {
+    version: 10,
+    label: "PostgreSQL 10",
+    communitySupportEndsOn: "2022-11-10",
+    addColumnDefaultNotes:
+      "PostgreSQL 10 predates the fast-default optimization, so ADD COLUMN ... DEFAULT usually rewrites existing rows and deserves extra deployment caution on large tables.",
+    concurrentIndexNotes:
+      "CREATE INDEX CONCURRENTLY and DROP INDEX CONCURRENTLY are available, but they still cannot run inside a transaction block and REINDEX CONCURRENTLY is not available yet.",
+    enumChangeNotes:
+      "ALTER TYPE ... ADD VALUE cannot run inside a transaction block on PostgreSQL 10, so transaction-wrapped migration runners often need a separate deploy step.",
+    generatedColumnNotes:
+      "Generated columns are not available in PostgreSQL 10, so generated-column syntax should be treated as version-incompatible.",
+  },
   {
     version: 11,
     label: "PostgreSQL 11",

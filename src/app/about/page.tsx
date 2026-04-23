@@ -1,13 +1,19 @@
-import type { Metadata } from "next";
 import { Badge } from "@/components/Badge";
 import { Card } from "@/components/Card";
 import { Container } from "@/components/Container";
+import { buildPageMetadata } from "@/lib/metadata";
 
-export const metadata: Metadata = {
+export const metadata = buildPageMetadata({
   title: "About",
   description:
     "Authos builds browser-first developer tools with clear trust boundaries and sharp, focused workflows.",
-};
+  path: "/about",
+  keywords: [
+    "about authos",
+    "browser-first developer tools",
+    "postgres migration safety checker",
+  ],
+});
 
 const principles = [
   "Keep sensitive inputs local whenever a tool can run fully in the browser.",

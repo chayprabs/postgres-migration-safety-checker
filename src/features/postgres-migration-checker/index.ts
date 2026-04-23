@@ -1,4 +1,5 @@
 export * from "./content";
+export * from "./docs";
 export * from "./structuredData";
 export * from "./types";
 export * from "./samples";

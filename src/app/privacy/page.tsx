@@ -1,13 +1,19 @@
-import type { Metadata } from "next";
 import { Badge } from "@/components/Badge";
 import { Card } from "@/components/Card";
 import { Container } from "@/components/Container";
+import { buildPageMetadata } from "@/lib/metadata";
 
-export const metadata: Metadata = {
+export const metadata = buildPageMetadata({
   title: "Privacy",
   description:
     "Authos is designed around browser-local tooling. The PostgreSQL Migration Safety Checker analyzes SQL locally, keeps reports local, and excludes raw SQL from analytics.",
-};
+  path: "/privacy",
+  keywords: [
+    "Authos privacy",
+    "local-first developer tools",
+    "postgres migration checker privacy",
+  ],
+});
 
 const generalPrivacyNotes = [
   {

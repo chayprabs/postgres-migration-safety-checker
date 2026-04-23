@@ -68,7 +68,7 @@ export const postgresMigrationCheckerCatchCards = [
   {
     title: "Non-concurrent indexes",
     description:
-      "Warn when CREATE INDEX or DROP INDEX should likely be rolled out with CONCURRENTLY on a busy table.",
+      "Warn when CREATE INDEX or DROP INDEX should likely be rolled out with CONCURRENTLY on a busy table, which makes the checker useful as a CREATE INDEX CONCURRENTLY review surface.",
   },
   {
     title: "Constraints that scan large tables",
@@ -119,12 +119,12 @@ export const postgresMigrationCheckerUseCases = [
   {
     title: "Reviewing Rails, Django, or Prisma migrations",
     description:
-      "Use it before a deploy when framework helpers hide the actual SQL or transaction behavior from reviewers.",
+      "Use it before a deploy when framework helpers hide the actual SQL or transaction behavior from reviewers, whether you need Rails PostgreSQL migration safety, Django PostgreSQL migration safety, or a Prisma migration risk checker.",
   },
   {
     title: "Checking ALTER TABLE statements before deploy",
     description:
-      "Validate that a schema change is not about to take a stronger lock or trigger a rewrite on a hot table.",
+      "Validate that a schema change is not about to take a stronger lock or trigger a rewrite on a hot table, which makes the tool feel like a practical PostgreSQL ALTER TABLE lock checker.",
   },
   {
     title: "Reviewing code review diffs",
@@ -139,7 +139,7 @@ export const postgresMigrationCheckerUseCases = [
   {
     title: "Incident prevention",
     description:
-      "Use the tool as a fast preflight check before the migration ever reaches a staging or production deploy window.",
+      "Use the tool as a fast preflight check before the migration ever reaches a staging or production deploy window, especially when you want a Postgres zero downtime migration checker instead of a last-minute rollback.",
   },
 ] as const;
 
@@ -168,7 +168,7 @@ export const postgresMigrationCheckerFaqEntries = [
   {
     question: "What PostgreSQL versions are supported?",
     answer:
-      "The main browser workflow targets PostgreSQL 11 through 18 with version-aware guidance, while some legacy analyzer logic still keeps older behavior in mind for rule tuning.",
+      "The browser workflow supports PostgreSQL 10 through 18 with version-aware guidance, including legacy notes for older releases where behavior differs materially from modern PostgreSQL.",
   },
   {
     question: "Why is CREATE INDEX CONCURRENTLY safer?",
@@ -189,6 +189,11 @@ export const postgresMigrationCheckerFaqEntries = [
     question: "Can I use this in CI?",
     answer:
       "Not yet in this baseline. The contracts are being laid out so the same rules can later power browser review, CI validation, and PR summaries from one analyzer core.",
+  },
+  {
+    question: "Is this a PostgreSQL migration linter online?",
+    answer:
+      "It is closer to a migration safety checker than a style linter. The browser workflow is designed to help you check PostgreSQL migration locks, rewrite risk, transaction caveats, and rollout safety without uploading raw SQL to a server.",
   },
 ] as const;
 

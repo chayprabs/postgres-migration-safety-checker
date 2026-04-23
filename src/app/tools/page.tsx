@@ -8,12 +8,19 @@ import { SectionHeader } from "@/components/SectionHeader";
 import { ToolCard } from "@/components/ToolCard";
 import { ToolIcon } from "@/components/ToolIcon";
 import { comingSoonTools, toolCategories, tools } from "@/config/tools";
+import { buildPageMetadata } from "@/lib/metadata";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = buildPageMetadata({
   title: "Tools",
   description:
-    "Browse Authos developer tools, starting with the PostgreSQL Migration Safety Checker.",
-};
+    "Browse Authos developer tools, starting with the PostgreSQL Migration Safety Checker and its supporting migration docs.",
+  path: "/tools",
+  keywords: [
+    "developer tools",
+    "postgres migration checker",
+    "postgresql migration safety checker",
+  ],
+});
 
 function ComingSoonCard({
   name,

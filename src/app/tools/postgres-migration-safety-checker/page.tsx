@@ -14,6 +14,7 @@ import {
   PostgresMigrationCheckerShell,
   getPostgresMigrationSample,
   getPostgresMigrationCheckerStructuredData,
+  getPostgresDocsPath,
   postgresMigrationCheckerCatchCards,
   postgresMigrationCheckerFaqEntries,
   postgresMigrationCheckerHowItWorksSteps,
@@ -21,14 +22,13 @@ import {
   postgresMigrationCheckerTrustBadges,
   postgresMigrationCheckerUseCases,
   postgresMigrationCheckerWhyLocalFirstPoints,
+  postgresDocsArticles,
 } from "@/features/postgres-migration-checker";
-import { getCanonicalUrl } from "@/lib/metadata";
+import { buildPageMetadata } from "@/lib/metadata";
 
-const title =
-  "PostgreSQL Migration Safety Checker - Find Lock and Downtime Risks | Authos";
+const title = "PostgreSQL Migration Safety Checker";
 const description =
-  "Paste a PostgreSQL migration and find risky ALTER TABLE, CREATE INDEX, constraint, rewrite, transaction, and data-loss operations before they lock production.";
-const canonical = getCanonicalUrl(postgresMigrationSafetyCheckerTool.href);
+  "Use this browser-local Postgres migration checker to check PostgreSQL migration locks, ALTER TABLE risk, CREATE INDEX CONCURRENTLY caveats, and framework-specific rollout safety before deploy.";
 const crawlableExampleDefinitions = [
   {
     sampleId: "unsafe-add-default-and-index",
@@ -62,24 +62,27 @@ const crawlableExampleDefinitions = [
   },
 ] as const;
 
-export const metadata: Metadata = {
-  title: {
-    absolute: title,
-  },
+export const metadata: Metadata = buildPageMetadata({
+  title,
   description,
-  alternates: {
-    canonical,
-  },
-  openGraph: {
-    title,
-    description,
-    url: canonical,
-    type: "website",
-  },
-};
+  path: postgresMigrationSafetyCheckerTool.href,
+  keywords: [
+    "PostgreSQL migration safety checker",
+    "Postgres migration checker",
+    "PostgreSQL migration linter online",
+    "check PostgreSQL migration locks",
+    "PostgreSQL ALTER TABLE lock checker",
+    "CREATE INDEX CONCURRENTLY checker",
+    "Rails PostgreSQL migration safety",
+    "Django PostgreSQL migration safety",
+    "Prisma migration risk checker",
+    "Postgres zero downtime migration checker",
+  ],
+});
 
 export default function PostgresMigrationSafetyCheckerPage() {
   const structuredData = getPostgresMigrationCheckerStructuredData();
+  const guideArticles = postgresDocsArticles.slice(0, 5);
   const crawlableExamples = crawlableExampleDefinitions
     .map((example) => {
       const sample = getPostgresMigrationSample(example.sampleId);
@@ -104,8 +107,15 @@ export default function PostgresMigrationSafetyCheckerPage() {
           <div className="space-y-5">
             <ProseBlock>
               <p>
-                Paste a migration SQL file and get a lock, downtime, rewrite, and
-                data-loss risk report before it reaches production.
+                Paste a migration SQL file and use this PostgreSQL migration
+                safety checker as a browser-local Postgres migration checker and
+                lightweight PostgreSQL migration linter online before the change
+                reaches production.
+              </p>
+              <p>
+                It helps you check PostgreSQL migration locks, ALTER TABLE
+                rewrite risk, CREATE INDEX CONCURRENTLY caveats, and framework
+                rollout safety for Rails, Django, Prisma, and raw SQL workflows.
               </p>
             </ProseBlock>
             <div className="flex flex-wrap gap-2">
@@ -142,24 +152,67 @@ export default function PostgresMigrationSafetyCheckerPage() {
               <div className="space-y-3">
                 <h2 className="text-xl font-semibold">Get a review surface built for risky DDL.</h2>
                 <p className="text-sm leading-7 text-muted-foreground">
-                  This landing page sets up the browser-local workspace shell for
-                  migration review, along with the version-aware copy, metadata,
-                  and local analysis workflow a real tool page needs.
+                  This page is built to work both as a crawlable launch page and
+                  as the live browser workspace for a Postgres zero downtime
+                  migration checker.
                 </p>
               </div>
               <ul className="space-y-3 text-sm leading-7 text-muted-foreground">
                 <li>Flag risky ALTER TABLE and lock-heavy schema changes.</li>
+                <li>Check CREATE INDEX CONCURRENTLY usage and transaction caveats.</li>
                 <li>Review framework-specific migration behavior before rollout.</li>
-                <li>Prepare review notes that fit naturally into a pull request.</li>
               </ul>
             </div>
           </Card>
         }
       />
 
-      <section className="border-b border-border">
+      <section id="checker-workspace" className="border-b border-border">
         <Container className="py-10 sm:py-12">
           <PostgresMigrationCheckerShell />
+        </Container>
+      </section>
+
+      <section id="checker-guides" className="border-b border-border">
+        <Container className="py-12 sm:py-14">
+          <div className="space-y-6">
+            <SectionHeader
+              badge="Guides and tutorials"
+              title="Use the checker with migration-specific playbooks"
+              description={
+                <p>
+                  These internal docs support the tool with detailed guidance on
+                  lock levels, concurrent indexes, NOT VALID constraints, phased
+                  NOT NULL rollouts, and Rails PostgreSQL migration safety.
+                </p>
+              }
+            />
+
+            <FeatureGrid columns={2}>
+              {guideArticles.map((article) => (
+                <Card key={article.slug} className="p-6">
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="outline">Docs</Badge>
+                      <Badge variant="outline">Crawlable guide</Badge>
+                    </div>
+                    <div className="space-y-2">
+                      <h2 className="text-lg font-semibold">{article.title}</h2>
+                      <p className="text-sm leading-7 text-muted-foreground">
+                        {article.cardSummary}
+                      </p>
+                    </div>
+                    <Link
+                      href={getPostgresDocsPath(article.slug)}
+                      className={buttonStyles({ variant: "secondary" })}
+                    >
+                      Read guide
+                    </Link>
+                  </div>
+                </Card>
+              ))}
+            </FeatureGrid>
+          </div>
         </Container>
       </section>
 

@@ -13,6 +13,7 @@ export const siteConfig = {
 
 export const headerNavigation: NavigationItem[] = [
   { href: "/tools", label: "Tools" },
+  { href: "/docs", label: "Docs" },
   { href: "/privacy", label: "Privacy" },
   { href: "/about", label: "About" },
 ];

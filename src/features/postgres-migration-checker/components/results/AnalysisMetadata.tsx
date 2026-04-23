@@ -15,14 +15,30 @@ function formatRuntimeLabel(mode: AnalysisResult["metadata"]["runtime"]["mode"])
   return mode === "worker" ? "Web Worker" : "Main thread";
 }
 
-function formatParserLabel(parser: AnalysisResult["metadata"]["parser"]["parser"]) {
+function getParserStatusLabel(parser: AnalysisResult["metadata"]["parser"]) {
+  if (parser.ok && parser.parser === "supabase-pg-parser") {
+    return "Parsed with PostgreSQL parser";
+  }
+
+  if (parser.errors.length > 0) {
+    return "Partial analysis due to parser error";
+  }
+
+  if (parser.parser === "fallback") {
+    return "Used fallback pattern analysis";
+  }
+
+  return "No parser run";
+}
+
+function formatParserEngineLabel(parser: AnalysisResult["metadata"]["parser"]["parser"]) {
   switch (parser) {
     case "supabase-pg-parser":
       return "Supabase PG parser";
     case "fallback":
-      return "Fallback classifier";
+      return "Fallback pattern matcher";
     default:
-      return "No parser";
+      return "Not used";
   }
 }
 
@@ -38,6 +54,14 @@ function toHeadingCase(value: string) {
     .split("-")
     .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
     .join(" ");
+}
+
+function formatAnalysisDuration(durationMs: number) {
+  if (durationMs >= 1000) {
+    return `${(durationMs / 1000).toFixed(durationMs >= 10_000 ? 0 : 1)} s`;
+  }
+
+  return `${durationMs} ms`;
 }
 
 export function AnalysisMetadata({
@@ -62,7 +86,7 @@ export function AnalysisMetadata({
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-2xl border border-border bg-card px-4 py-3">
             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-              postgresVersionUsed
+              PostgreSQL version used
             </p>
             <p className="mt-2 text-sm font-medium text-foreground">
               PostgreSQL {result.metadata.postgresVersionUsed}
@@ -70,7 +94,7 @@ export function AnalysisMetadata({
           </div>
           <div className="rounded-2xl border border-border bg-card px-4 py-3">
             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-              parserVersionUsed
+              Parser version used
             </p>
             <p className="mt-2 text-sm font-medium text-foreground">
               {result.metadata.parserVersionUsed
@@ -80,7 +104,7 @@ export function AnalysisMetadata({
           </div>
           <div className="rounded-2xl border border-border bg-card px-4 py-3">
             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-              frameworkPreset
+              Framework preset
             </p>
             <p className="mt-2 text-sm font-medium text-foreground">
               {result.metadata.frameworkPreset}
@@ -88,7 +112,7 @@ export function AnalysisMetadata({
           </div>
           <div className="rounded-2xl border border-border bg-card px-4 py-3">
             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-              tableSizeProfile
+              Table size profile
             </p>
             <p className="mt-2 text-sm font-medium text-foreground">
               {toHeadingCase(result.metadata.tableSizeProfile)}
@@ -96,7 +120,7 @@ export function AnalysisMetadata({
           </div>
           <div className="rounded-2xl border border-border bg-card px-4 py-3">
             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-              rulesRun
+              Rules executed
             </p>
             <p className="mt-2 text-sm font-medium text-foreground">
               {result.metadata.rulesRun.length}
@@ -104,7 +128,7 @@ export function AnalysisMetadata({
           </div>
           <div className="rounded-2xl border border-border bg-card px-4 py-3">
             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-              rulesSkipped
+              Rules skipped
             </p>
             <p className="mt-2 text-sm font-medium text-foreground">
               {result.metadata.rulesSkipped.length}
@@ -112,10 +136,13 @@ export function AnalysisMetadata({
           </div>
           <div className="rounded-2xl border border-border bg-card px-4 py-3">
             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-              Parser
+              Parser status
             </p>
             <p className="mt-2 text-sm font-medium text-foreground">
-              {formatParserLabel(result.metadata.parser.parser)}
+              {getParserStatusLabel(result.metadata.parser)}
+            </p>
+            <p className="mt-1 text-xs leading-6 text-muted-foreground">
+              {formatParserEngineLabel(result.metadata.parser.parser)}
             </p>
           </div>
           <div className="rounded-2xl border border-border bg-card px-4 py-3">
@@ -133,15 +160,15 @@ export function AnalysisMetadata({
             <p className="text-sm font-medium text-foreground">Run details</p>
             <div className="mt-3 space-y-2 text-sm leading-7 text-muted-foreground">
               <p>
-                <span className="font-medium text-foreground">analysisDurationMs:</span>{" "}
-                {result.metadata.analysisDurationMs}
+                <span className="font-medium text-foreground">analysis duration:</span>{" "}
+                {formatAnalysisDuration(result.metadata.analysisDurationMs)}
               </p>
               <p>
-                <span className="font-medium text-foreground">analyzedAt:</span>{" "}
+                <span className="font-medium text-foreground">analyzed at:</span>{" "}
                 {formatTimestamp(result.analyzedAt)}
               </p>
               <p>
-                <span className="font-medium text-foreground">analyzerVersion:</span>{" "}
+                <span className="font-medium text-foreground">analyzer version:</span>{" "}
                 {result.analyzerVersion}
               </p>
               <p>

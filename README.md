@@ -1,95 +1,151 @@
 # Authos
 
-Authos is a browser-first developer tools website. The product is meant to host
-multiple focused tools over time, with the PostgreSQL Migration Safety Checker
-as the first complete tool.
+Authos is a browser-first developer tools product. The current launchable surface
+is the PostgreSQL Migration Safety Checker: a local-first review tool for pasted
+or uploaded migration SQL that highlights lock risk, transaction hazards,
+destructive operations, parser fallback states, and safer rollout patterns
+before deploy.
 
-The first tool route is:
+## Product overview
 
+- No login is required for the PostgreSQL checker.
+- SQL can be pasted directly into the editor or loaded from a local `.sql` file.
+- Analysis runs in the browser with a Web Worker path when available and a
+  main-thread fallback when needed.
+- Findings include a risk score, summary, lock context, safer rewrite guidance,
+  and framework-aware advice for Rails, Django, Prisma, and raw SQL workflows.
+- Reports can be copied or downloaded as Markdown, HTML, and JSON.
+- Reports omit raw SQL snippets by default.
+
+## Routes
+
+- `/`
+- `/tools`
 - `/tools/postgres-migration-safety-checker`
+- `/docs`
+- `/docs/postgresql-migration-locks`
+- `/docs/create-index-concurrently`
+- `/docs/safe-postgres-not-null-migration`
+- `/docs/postgres-foreign-key-not-valid`
+- `/docs/rails-postgres-migration-safety`
+- `/privacy`
+- `/about`
+- `/robots.txt`
+- `/sitemap.xml`
 
-## What the product does
-
-Authos is built for careful, high-signal workflows where developers often paste
-sensitive technical input. The initial product surface focuses on PostgreSQL
-migration review because schema changes can trigger locks, rewrites, downtime,
-unsafe index rollouts, transaction surprises, and destructive operations.
-
-## Local-only privacy promise
-
-- The PostgreSQL Migration Safety Checker is designed to run analysis locally in
-  the browser.
-- No login is required for the first tool.
-- No pasted SQL is sent to a backend.
-- Raw user SQL must not be sent to analytics, telemetry, or logs.
-
-See [docs/privacy-and-telemetry.md](./docs/privacy-and-telemetry.md) for the
-full privacy boundary.
-
-## Stack
-
-- Next.js App Router
-- TypeScript with `strict` mode
-- Tailwind CSS
-- ESLint
-- `src/` directory layout
-- `@/*` import alias
-- `next-themes` for dark mode
-
-## Project structure
-
-- `src/app/*` contains routes and app-level layout/metadata.
-- `src/config/tools.ts` is the product registry for tool metadata.
-- `src/components/*` contains generic UI primitives and site chrome.
-- `src/features/postgres-migration-checker/*` contains PostgreSQL checker domain
-  contracts, constants, and feature-specific content.
-- `src/lib/site.ts` contains shared site navigation and site-wide copy.
-- `docs/*` contains architecture, privacy, and analyzer planning notes.
-
-## Run locally
-
-This project was initialized with `pnpm` because `pnpm` was available in the
-environment.
+## Setup
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open `http://localhost:3000` for local development.
 
-## Test and verify
+## Environment variables
 
-There is not yet a dedicated unit test suite. For the current baseline, use:
+Copy `.env.example` to `.env.local` when you need local overrides.
+
+- `NEXT_PUBLIC_SITE_URL`
+  Use the public production origin for canonical metadata, the sitemap, and
+  `robots.txt`. Example: `https://authos.dev`
+- `NEXT_PUBLIC_ANALYTICS_VENDOR`
+  Optional. Only set this if you deliberately wire a sanitized browser-side
+  analytics hook.
+- `NEXT_PUBLIC_ANALYTICS_KEY`
+  Optional companion public key for the analytics hook.
+
+## Testing and verification
 
 ```bash
 pnpm lint
 pnpm typecheck
+pnpm test
 pnpm build
+pnpm test:e2e
 ```
 
-These commands cover linting, TypeScript validation, and production build
-verification.
+If Playwright browsers are not installed yet:
 
-## Environment
+```bash
+pnpm exec playwright install chromium
+```
 
-Copy `.env.example` to `.env.local` only if you need local overrides. The
-example file documents future-safe flags, but the baseline app does not require
-any secrets or backend credentials.
+Helpful extras:
 
-## Extending Authos
+```bash
+pnpm test:watch
+pnpm test:e2e:ui
+```
 
-To add another tool later:
+## Privacy model
 
-1. Add a new entry to `src/config/tools.ts`.
-2. Create a feature folder under `src/features/<tool-name>`.
-3. Add the public route under `src/app/tools/<slug>/page.tsx`.
-4. Keep privacy-sensitive analysis browser-local unless there is a deliberate,
-   documented reason not to.
+- Analysis is designed to run locally in the browser.
+- Uploaded `.sql` files are read by the browser only.
+- Raw SQL is not embedded in shareable settings links.
+- Raw SQL is not sent through the analytics adapter.
+- Reports are generated locally.
+- Local history is opt-in and requires explicit confirmation before storing SQL.
+- Summary-only saves avoid storing SQL by default.
+
+More detail: [`docs/privacy-and-telemetry.md`](./docs/privacy-and-telemetry.md)
+
+## Analyzer limitations
+
+- This tool does not connect to your database, inspect live locks, or observe
+  table size directly.
+- Severity tuning uses the table-size profile you choose, not live row counts.
+- Parser fallback can still produce useful findings, but those findings are less
+  precise than a full parser-backed run.
+- Large migrations may require manual confirmation, worker-only execution, or a
+  CLI/CI workflow instead of browser analysis.
+- The checker helps with migration review, but it does not guarantee zero
+  downtime or replace rollout planning.
+
+## Deployment
+
+### Vercel
+
+1. Create a new Vercel project from this repository.
+2. Set `NEXT_PUBLIC_SITE_URL` to the production origin.
+3. Install dependencies with `pnpm`.
+4. Keep the default Next.js build command or use `pnpm build`.
+5. Run the verification commands below before promoting the deploy.
+
+### Any static-capable Next.js host
+
+1. Set `NEXT_PUBLIC_SITE_URL`.
+2. Run `pnpm install`.
+3. Run the full verification stack.
+4. Deploy with `pnpm build` and `pnpm start`, or your host's equivalent Next.js
+   production flow.
+
+## Commands before deployment
+
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm test:e2e
+```
+
+## Known future improvements
+
+- CI snippet generator for migration review steps.
+- GitHub PR comment integration.
+- Browser extension.
+- CLI companion.
+- Broader PostgreSQL parser version coverage.
+- Schema-aware checks with optional local schema paste.
+- Compare-two-migrations workflow.
+- Team and self-hosted private deployment options.
+- More tools across the wider Authos product.
 
 ## Additional documentation
 
-- [Architecture](./docs/architecture.md)
-- [Privacy and telemetry](./docs/privacy-and-telemetry.md)
-- [PostgreSQL migration checker rules](./docs/postgres-migration-checker-rules.md)
-"# postgres-migration-safety-checker" 
+- [`docs/manual-qa-checklist.md`](./docs/manual-qa-checklist.md)
+- [`docs/launch-checklist.md`](./docs/launch-checklist.md)
+- [`docs/roadmap.md`](./docs/roadmap.md)
+- [`docs/architecture.md`](./docs/architecture.md)
+- [`docs/postgres-migration-checker-rules.md`](./docs/postgres-migration-checker-rules.md)
