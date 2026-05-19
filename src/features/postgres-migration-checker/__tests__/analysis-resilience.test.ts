@@ -14,6 +14,21 @@ describe("analysis resilience", () => {
     ).toBe(true);
   });
 
+  it("maps PostgreSQL 18 to parser 17 with an explicit version-fallback warning", async () => {
+    const result = await analyzeSql("SELECT 1;", {
+      postgresVersion: 18,
+    });
+
+    expect(result.metadata.parser.effectiveVersion).toBe(17);
+    expect(result.metadata.parserVersionUsed).toBe(17);
+    expect(
+      result.metadata.parser.warnings.some(
+        (warning) => warning.code === "parser.version-fallback",
+      ),
+    ).toBe(true);
+    expect(result.metadata.parser.warnings[0]?.message).toMatch(/PostgreSQL 18/i);
+  });
+
   it("still reports secret warnings when parser fallback is used", async () => {
     const result = await analyzeSql(
       "-- postgres://deploy:super-secret-value@db.internal.example.com/app\nALTER TABLE public.users ADD COLUMN note text DEFAULT 'unterminated;",

@@ -33,6 +33,18 @@ before deploy.
 - `/robots.txt`
 - `/sitemap.xml`
 
+## Quickstart (clean clone)
+
+```bash
+pnpm install
+pnpm exec playwright install chromium   # first time only, for E2E
+pnpm lint && pnpm typecheck && pnpm test && pnpm build
+pnpm dev
+```
+
+Open `http://localhost:3000` for local development. See [`docs/project-facts.md`](./docs/project-facts.md) for
+repository naming, domain guidance, and verification notes.
+
 ## Setup
 
 ```bash
@@ -40,15 +52,15 @@ pnpm install
 pnpm dev
 ```
 
-Open `http://localhost:3000` for local development.
-
 ## Environment variables
 
 Copy `.env.example` to `.env.local` when you need local overrides.
 
 - `NEXT_PUBLIC_SITE_URL`
-  Use the public production origin for canonical metadata, the sitemap, and
-  `robots.txt`. Example: `https://authos.dev`
+  Use your real deployment origin for canonical metadata, the sitemap, and
+  `robots.txt`. On Vercel this can be left unset (the build uses `VERCEL_URL`).
+  **Do not use `https://authos.dev`** — that domain is an unrelated authentication
+  product. See [`docs/project-facts.md`](./docs/project-facts.md).
 - `NEXT_PUBLIC_ANALYTICS_VENDOR`
   Optional. Only set this if you deliberately wire a sanitized browser-side
   analytics hook.
@@ -144,6 +156,7 @@ pnpm test:e2e
 
 ## Additional documentation
 
+- [`docs/project-facts.md`](./docs/project-facts.md)
 - [`docs/manual-qa-checklist.md`](./docs/manual-qa-checklist.md)
 - [`docs/launch-checklist.md`](./docs/launch-checklist.md)
 - [`docs/roadmap.md`](./docs/roadmap.md)

@@ -1,13 +1,29 @@
 import type { Metadata } from "next";
 
-const DEFAULT_SITE_URL = "https://authos.dev";
+const LOCAL_DEV_SITE_URL = "http://localhost:3000";
 
 function normalizeBaseUrl(url: string) {
   return url.endsWith("/") ? url.slice(0, -1) : url;
 }
 
+function resolveProductionSiteUrl() {
+  const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+
+  if (configured) {
+    return normalizeBaseUrl(configured);
+  }
+
+  const vercelHost = process.env.VERCEL_URL?.trim();
+
+  if (vercelHost) {
+    return normalizeBaseUrl(`https://${vercelHost}`);
+  }
+
+  return LOCAL_DEV_SITE_URL;
+}
+
 export function getSiteUrl() {
-  return normalizeBaseUrl(process.env.NEXT_PUBLIC_SITE_URL || DEFAULT_SITE_URL);
+  return resolveProductionSiteUrl();
 }
 
 export function getMetadataBase() {
