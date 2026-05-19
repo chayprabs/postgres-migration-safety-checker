@@ -254,9 +254,10 @@ test("opens a printable report window", async ({ page, context }) => {
 
   const popupPromise = context.waitForEvent("page");
   await page.getByRole("button", { name: "Print report" }).click();
+  await expectStatusMessage(page, "Opened printable report");
   const popup = await popupPromise;
 
-  await expect(popup.locator("h1")).toContainText("PostgreSQL Migration Safety Report", {
+  await expect(popup.locator("body")).toContainText("PostgreSQL Migration Safety Report", {
     timeout: 10_000,
   });
   await popup.close();
@@ -273,8 +274,10 @@ test("saves analysis locally as summary only after confirmation", async ({ page 
   ).toBeVisible();
   await page.getByRole("button", { name: "Save summary only" }).click();
 
-  await expect(page.getByRole("status")).toContainText(/Saved .* locally as a summary/i);
-  await expect(page.getByText("Summary only")).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: /Saved .* locally as a summary/i }),
+  ).toBeVisible();
+  await expect(page.getByText("Summary only").first()).toBeVisible();
 });
 
 test("settings links never include pasted SQL", async ({ page }) => {

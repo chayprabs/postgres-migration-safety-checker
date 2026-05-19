@@ -63,7 +63,7 @@ import {
 import {
   collectSecretRedactionMatches,
   redactSecretsInText,
-} from "../analyzer/security/secretDetection";
+} from "@authos/pg-migration-analyzer";
 import {
   clearSavedLocalHistory,
   deleteSavedLocalAnalysis,
@@ -86,15 +86,17 @@ import {
   type FindingsSeverityFilter,
   type FindingsSortMode,
 } from "./results";
-import { createHtmlReport } from "../reports/htmlReport";
-import { createMarkdownReport } from "../reports/markdownReport";
-import { stringifyJsonReport } from "../reports/jsonReport";
+import {
+  createHtmlReport,
+  createMarkdownReport,
+  stringifyJsonReport,
+} from "@authos/pg-migration-analyzer";
 import {
   downloadTextFile,
   getReportFilenames,
   openPrintReport,
 } from "../reports/download";
-import type { ReportExportInput } from "../reports/types";
+import type { ReportExportInput } from "@authos/pg-migration-analyzer";
 import {
   LOAD_POSTGRES_MIGRATION_SAMPLE_EVENT,
   type LoadPostgresMigrationSampleDetail,

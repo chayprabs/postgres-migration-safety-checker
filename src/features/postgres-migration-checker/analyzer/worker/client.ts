@@ -1,8 +1,11 @@
 "use client";
 
-import type { AnalysisResult, AnalysisSettings } from "../../types";
-import { getUtf8ByteLength } from "../../inputProfile";
-import { runAnalysisPipeline } from "../analysisPipeline";
+import {
+  getUtf8ByteLength,
+  runAnalysisPipeline,
+  type AnalysisResult,
+  type AnalysisSettings,
+} from "@authos/pg-migration-analyzer";
 
 type AnalyzeInput = {
   settings: AnalysisSettings;

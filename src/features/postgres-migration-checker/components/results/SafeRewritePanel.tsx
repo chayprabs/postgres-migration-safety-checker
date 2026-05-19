@@ -3,7 +3,7 @@
 import type {
   FindingRecipeGroup,
   SafeRewriteRecipe,
-} from "../../analyzer/recipes/types";
+} from "@authos/pg-migration-analyzer";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 

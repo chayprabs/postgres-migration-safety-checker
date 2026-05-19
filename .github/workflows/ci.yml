@@ -35,7 +35,7 @@ jobs:
         run: pnpm typecheck
 
       - name: Unit tests
-        run: pnpm test
+        run: pnpm test && pnpm test:analyzer
 
       - name: Production build
         run: pnpm build

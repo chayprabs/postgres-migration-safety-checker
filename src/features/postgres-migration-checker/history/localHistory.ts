@@ -1,4 +1,4 @@
-import { redactSecretsInText } from "../analyzer/security/secretDetection";
+import { redactSecretsInText } from "@authos/pg-migration-analyzer";
 import type {
   AnalysisResult,
   AnalysisSettings,

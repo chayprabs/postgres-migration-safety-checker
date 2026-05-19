@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  transpilePackages: ["@authos/pg-migration-analyzer"],
 };
 
 export default nextConfig;

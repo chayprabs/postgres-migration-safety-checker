@@ -17,6 +17,9 @@ export default defineConfig({
   reporter: [["list"]],
   use: {
     baseURL,
+    launchOptions: {
+      args: ["--disable-popup-blocking"],
+    },
     acceptDownloads: true,
     screenshot: "only-on-failure",
     trace: "on-first-retry",

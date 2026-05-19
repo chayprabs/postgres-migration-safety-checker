@@ -22,7 +22,12 @@ export default defineConfig({
     },
     environment: "node",
     globals: true,
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    include: [
+      "src/**/*.test.ts",
+      "src/**/*.test.tsx",
+      "packages/pg-migration-analyzer/__tests__/**/*.test.ts",
+      "packages/pg-migration-analyzer/src/**/*.test.ts",
+    ],
     setupFiles: ["./vitest.setup.ts"],
   },
 });

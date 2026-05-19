@@ -1,5 +1,8 @@
-import type { AnalysisResult, AnalysisSettings } from "../../types";
-import { runAnalysisPipeline } from "../analysisPipeline";
+import {
+  runAnalysisPipeline,
+  type AnalysisResult,
+  type AnalysisSettings,
+} from "@authos/pg-migration-analyzer";
 
 type AnalyzerWorkerRequest = {
   id: number;
