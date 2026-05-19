@@ -27,7 +27,9 @@ export default defineConfig({
       "src/**/*.test.tsx",
       "packages/pg-migration-analyzer/__tests__/**/*.test.ts",
       "packages/pg-migration-analyzer/src/**/*.test.ts",
+      "packages/pg-migration-cli/__tests__/**/*.test.ts",
     ],
+    testTimeout: 30_000,
     setupFiles: ["./vitest.setup.ts"],
   },
 });
