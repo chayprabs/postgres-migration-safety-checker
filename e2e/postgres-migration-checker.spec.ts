@@ -1,4 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { expect, type Page, test } from "@playwright/test";
 
 const TOOL_PATH = "/tools/postgres-migration-safety-checker";
@@ -203,6 +205,76 @@ test.describe("mobile viewport", () => {
     await page.getByRole("tab", { name: "Findings" }).click();
     await expect(page.getByRole("tabpanel", { name: "Findings" })).toBeVisible();
   });
+});
+
+test("uploads a local sql file into the editor", async ({ page }) => {
+  const sql = "SELECT 1 AS uploaded_migration_probe;";
+  const filePath = join(tmpdir(), `authos-upload-${Date.now()}.sql`);
+
+  await writeFile(filePath, sql, "utf8");
+
+  await page.getByRole("button", { name: "Upload SQL" }).click();
+  await page.locator('input[type="file"]').setInputFiles(filePath);
+
+  await expect(page.getByLabel("Migration SQL editor")).toContainText(
+    "uploaded_migration_probe",
+  );
+  await expect(page.getByRole("status")).toContainText(/Uploaded .* locally/i);
+});
+
+test("downloads HTML and JSON reports", async ({ page }) => {
+  await disableAutoAnalyze(page);
+  await loadExample(page, SAMPLE_NAMES.unsafeAddDefaultAndIndex);
+  await runDesktopAnalysis(page);
+
+  const htmlDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download HTML" }).click();
+  const htmlDownload = await htmlDownloadPromise;
+  const htmlPath = await htmlDownload.path();
+  const htmlReport = await readFile(htmlPath!, "utf8");
+  expect(htmlReport).toContain("PostgreSQL Migration Safety Report");
+  expect(htmlReport).toContain("Include SQL snippets:</strong> No");
+
+  const jsonDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download JSON" }).click();
+  const jsonDownload = await jsonDownloadPromise;
+  const jsonPath = await jsonDownload.path();
+  const jsonReport = JSON.parse(await readFile(jsonPath!, "utf8")) as {
+    title: string;
+    privacy: { includeSqlSnippets: boolean };
+  };
+  expect(jsonReport.title).toBe("PostgreSQL Migration Safety Report");
+  expect(jsonReport.privacy.includeSqlSnippets).toBe(false);
+});
+
+test("opens a printable report window", async ({ page, context }) => {
+  await disableAutoAnalyze(page);
+  await loadExample(page, SAMPLE_NAMES.unsafeAddDefaultAndIndex);
+  await runDesktopAnalysis(page);
+
+  const popupPromise = context.waitForEvent("page");
+  await page.getByRole("button", { name: "Print report" }).click();
+  const popup = await popupPromise;
+
+  await expect(popup.locator("h1")).toContainText("PostgreSQL Migration Safety Report", {
+    timeout: 10_000,
+  });
+  await popup.close();
+});
+
+test("saves analysis locally as summary only after confirmation", async ({ page }) => {
+  await disableAutoAnalyze(page);
+  await loadExample(page, SAMPLE_NAMES.unsafeAddDefaultAndIndex);
+  await runDesktopAnalysis(page);
+
+  await page.getByRole("button", { name: "Save locally" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Save this migration in this browser?" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Save summary only" }).click();
+
+  await expect(page.getByRole("status")).toContainText(/Saved .* locally as a summary/i);
+  await expect(page.getByText("Summary only")).toBeVisible();
 });
 
 test("settings links never include pasted SQL", async ({ page }) => {

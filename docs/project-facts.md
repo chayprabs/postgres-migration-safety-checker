@@ -22,7 +22,8 @@ only configures pnpm build ignores; it does not define workspace packages.
   returns **404** there.
 - **No production URL for this repo is configured in git.** Deploy by connecting
   this repository to Vercel (or another Next.js host) and setting
-  `NEXT_PUBLIC_SITE_URL` to your deployment origin.
+  `NEXT_PUBLIC_SITE_URL` to your deployment origin. Until then, CI and local builds
+  use `http://localhost:3000` or `VERCEL_URL` when deployed without the public env var.
 - **Canonical URL resolution** (see `src/lib/metadata.ts`):
   1. `NEXT_PUBLIC_SITE_URL` when set
   2. `https://${VERCEL_URL}` on Vercel when unset

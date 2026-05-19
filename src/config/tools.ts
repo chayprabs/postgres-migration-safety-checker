@@ -52,7 +52,7 @@ export const postgresMigrationSafetyCheckerTool = {
   longDescription:
     "Check PostgreSQL migration SQL locally in the browser for locks, downtime, rewrites, unsafe indexes, dangerous constraints, destructive operations, and transaction issues before you ship.",
   category: "Database",
-  status: "Preview",
+  status: "Stable",
   href: "/tools/postgres-migration-safety-checker",
   primaryKeywords: [
     "postgresql migrations",

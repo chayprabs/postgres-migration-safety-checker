@@ -2,19 +2,19 @@
 
 ## Environment and metadata
 
-- Set `NEXT_PUBLIC_SITE_URL` to the real production origin (not `https://authos.dev`;
+- [ ] Set `NEXT_PUBLIC_SITE_URL` to the real production origin (not `https://authos.dev`;
   see `docs/project-facts.md`).
-- Confirm canonical metadata, Open Graph metadata, `robots.txt`, and
+- [ ] Confirm canonical metadata, Open Graph metadata, `robots.txt`, and
   `sitemap.xml` all use the production URL.
 
 ## Verification commands
 
-- Run `pnpm lint`
-- Run `pnpm typecheck`
-- Run `pnpm test`
-- Run `pnpm build`
-- Run `pnpm test:e2e`
-- Run `pnpm exec playwright install chromium` first if Playwright browsers are
+- [x] Run `pnpm lint`
+- [x] Run `pnpm typecheck`
+- [x] Run `pnpm test`
+- [x] Run `pnpm build`
+- [x] Run `pnpm test:e2e`
+- [x] Run `pnpm exec playwright install chromium` first if Playwright browsers are
   missing locally.
 
 ## Manual product checks
