@@ -1,22 +1,21 @@
 # Roadmap
 
-## PostgreSQL checker extensions
+## PostgreSQL checker (shipped)
 
-- CI snippet generator for rollout notes, deployment checklists, and safer
-  migration commands.
-- GitHub pull request comment integration for sharing checker output in review
-  threads.
-- Browser extension for quick analysis from migration files opened in GitHub or
-  internal tools.
-- CLI companion for large files, CI environments, and local pre-commit checks.
-- More PostgreSQL parser version support and richer parser-backed diagnostics.
-- Schema-aware checks with optional local schema paste for relationship-aware
-  findings.
-- Compare two migrations to explain what changed between revisions.
+- [x] CI snippet generator for rollout notes and pipeline starters
+- [x] GitHub pull request integration (Action + optional webhook API)
+- [x] Browser extension for GitHub/GitLab SQL blob pages
+- [x] CLI companion for CI and large files
+- [x] Schema-aware checks with optional local schema paste
+- [x] Compare two migrations workflow
+- [x] Docker self-host for the web checker
+
+## PostgreSQL checker (next)
+
+- Native PostgreSQL 18 parser when upstream WASM is available (fallback banner and tests today)
+- Optional npm publish for `@authos/pg-migration-cli` and `@authos/pg-migration-analyzer`
 
 ## Product and deployment expansion
 
-- Team and private self-hosted version for companies that need a tighter
-  internal trust boundary.
-- More Authos tools beyond PostgreSQL migration review, while keeping the same
-  local-first and high-signal product direction.
+- Team and private self-hosted hardening (SSO, audit logs) beyond the current Docker image
+- More Authos tools beyond PostgreSQL migration review, while keeping the same local-first direction

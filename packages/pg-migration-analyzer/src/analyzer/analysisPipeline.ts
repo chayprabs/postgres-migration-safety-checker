@@ -21,6 +21,7 @@ import {
 } from "./rules";
 import { createRuleHelpers, detectTransactionContext } from "./rules/utils";
 import { createSecretDetectionFindings } from "./security/secretDetection";
+import { parseSchemaSql } from "../schema/parseSchema";
 import {
   buildSqlSourceIndex,
   byteOffsetToCodeUnitOffset,
@@ -497,6 +498,10 @@ export async function runAnalysisPipeline({
     statements,
     framework.effectiveAssumeTransaction,
   );
+  const schemaIndex =
+    settings.schemaSql && settings.schemaSql.trim().length > 0
+      ? parseSchemaSql(settings.schemaSql)
+      : null;
   const parserFindings = parserDiagnosticsToFindings(parser.errors, statements);
   const secretFindings = createSecretDetectionFindings({
     sql,
@@ -507,10 +512,11 @@ export async function runAnalysisPipeline({
       sql,
       settings,
       statements,
-    parserResult: parser,
-    framework,
-    priorFindings: [],
+      parserResult: parser,
+      framework,
+      priorFindings: [],
       transactionContext,
+      schemaIndex,
       helpers: createRuleHelpers(transactionContext),
     });
   const findings = [...parserFindings, ...secretFindings, ...ruleFindings].sort(

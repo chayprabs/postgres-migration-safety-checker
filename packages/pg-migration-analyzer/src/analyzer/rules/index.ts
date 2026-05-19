@@ -30,6 +30,10 @@ import {
   SAFE_REWRITE_SPLIT_RISKY_MIGRATION,
 } from "../safeRewrites";
 import type { AnalyzerRule, AnalyzerRuleContext } from "./types";
+import {
+  PGM040_ALTER_UNKNOWN_TABLE,
+  PGM041_CREATE_INDEX_UNKNOWN_TABLE,
+} from "./schemaRules";
 
 function isAlterTableStatement(normalizedSql: string) {
   return /^ALTER\s+TABLE\b/i.test(normalizedSql);
@@ -1456,6 +1460,8 @@ export const BASE_ANALYZER_RULES = [
   PGM036_CREATE_EXTENSION,
   PGM037_DROP_TYPE_OR_DROP_SCHEMA,
   PGM038_CREATE_TABLE_AS_SELECT,
+  PGM040_ALTER_UNKNOWN_TABLE,
+  PGM041_CREATE_INDEX_UNKNOWN_TABLE,
 ] as const satisfies readonly AnalyzerRule[];
 
 export const DERIVED_ANALYZER_RULES = [

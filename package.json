@@ -18,7 +18,9 @@
     "test:e2e:ui": "playwright test --ui",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:analyzer": "pnpm --filter @authos/pg-migration-analyzer test"
+    "test:analyzer": "pnpm --filter @authos/pg-migration-analyzer test",
+    "test:cli": "pnpm --filter @authos/pg-migration-cli test",
+    "check:parser": "node scripts/check-parser-updates.mjs"
   },
   "dependencies": {
     "@authos/pg-migration-analyzer": "workspace:*",
@@ -39,6 +41,7 @@
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
+    "@authos/pg-migration-cli": "workspace:*",
     "@playwright/test": "^1.59.1",
     "@tailwindcss/postcss": "^4",
     "@testing-library/dom": "^10.4.1",

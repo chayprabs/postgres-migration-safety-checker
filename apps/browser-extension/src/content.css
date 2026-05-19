@@ -1,0 +1,47 @@
+#authos-migration-checker-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 99999;
+  width: min(360px, calc(100vw - 32px));
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
+  font: 14px/1.5 system-ui, sans-serif;
+}
+
+#authos-migration-checker-panel header {
+  margin-bottom: 8px;
+}
+
+#authos-migration-checker-panel .authos-muted {
+  margin: 0 0 12px;
+  color: #475569;
+}
+
+#authos-migration-checker-panel button {
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #fff;
+  cursor: pointer;
+}
+
+#authos-migration-checker-panel .authos-results {
+  margin-bottom: 12px;
+}
+
+#authos-migration-checker-panel ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+#authos-migration-checker-panel a {
+  color: #1d4ed8;
+}

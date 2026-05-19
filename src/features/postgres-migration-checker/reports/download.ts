@@ -59,19 +59,21 @@ export function downloadTextFile({
 }
 
 export function openPrintReport(html: string) {
-  const printWindow = window.open("", "_blank", "noopener,noreferrer");
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(blob);
+  const printWindow = window.open(objectUrl, "_blank", "noopener,noreferrer");
 
   if (!printWindow) {
+    URL.revokeObjectURL(objectUrl);
     return false;
   }
 
-  printWindow.document.open();
-  printWindow.document.write(html);
-  printWindow.document.close();
-  printWindow.focus();
-
   const handleLoad = () => {
+    printWindow.focus();
     printWindow.print();
+    window.setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+    }, 60_000);
   };
 
   if (printWindow.document.readyState === "complete") {

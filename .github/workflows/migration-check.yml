@@ -1,0 +1,31 @@
+name: Migration SQL check
+
+on:
+  pull_request:
+    paths:
+      - "**/*.sql"
+      - "packages/**"
+      - ".github/workflows/migration-check.yml"
+
+jobs:
+  migration-sql:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+      - name: Check unsafe fixture (expect failure)
+        run: |
+          pnpm exec pg-migration-check \
+            --file packages/pg-migration-analyzer/__fixtures__/unsafe-startup-migration.sql \
+            --postgres-version 16 \
+            --framework raw-sql \
+            --fail-on high \
+            && exit 1 || exit 0

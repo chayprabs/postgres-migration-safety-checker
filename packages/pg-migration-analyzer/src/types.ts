@@ -192,6 +192,7 @@ export type AnalysisSettings = {
   reportFormat: ReportFormat;
   stopAfterParseError: boolean;
   maxStatements?: number;
+  schemaSql?: string;
 };
 
 export type TransactionBoundary = "begin" | "commit" | "rollback" | "none";

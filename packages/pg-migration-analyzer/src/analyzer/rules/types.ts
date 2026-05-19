@@ -14,6 +14,7 @@ import type {
   StatementTransactionState,
   TransactionContext,
 } from "../../types";
+import type { SchemaIndex } from "../../schema/parseSchema";
 
 export type RuleFindingInput = {
   statement: MigrationStatement;
@@ -57,6 +58,7 @@ export type AnalyzerRuleContext = {
   framework: FrameworkAnalysisMetadata;
   priorFindings: Finding[];
   transactionContext: TransactionContext;
+  schemaIndex: SchemaIndex | null;
   helpers: AnalyzerRuleHelpers;
 };
 

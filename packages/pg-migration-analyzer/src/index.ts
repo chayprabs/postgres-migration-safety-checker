@@ -24,3 +24,6 @@ export * from "./reports/htmlReport";
 export * from "./reports/jsonReport";
 export * from "./reports/markdownReport";
 export * from "./reports/types";
+export * from "./compare/compareMigrations";
+export * from "./schema/parseSchema";
+export * from "./ci/generateCiSnippets";

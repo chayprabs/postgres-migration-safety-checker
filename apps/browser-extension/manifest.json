@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Authos PostgreSQL Migration Checker",
+  "version": "0.1.0",
+  "description": "Analyze GitHub SQL migration blobs locally with the Authos migration checker.",
+  "permissions": [],
+  "host_permissions": [
+    "https://github.com/*",
+    "https://gitlab.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://github.com/*/*/blob/**/*.sql",
+        "https://gitlab.com/*/*/-/blob/**/*.sql"
+      ],
+      "js": ["dist/content.js"],
+      "css": ["dist/content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+name: PostgreSQL Migration Safety Check
+description: Analyze changed SQL migration files with the Authos migration checker CLI from this repository.
+inputs:
+  files:
+    description: Glob for migration SQL files
+    required: false
+    default: "**/*migration*.sql"
+  postgres-version:
+    description: Target PostgreSQL version
+    required: false
+    default: "16"
+  framework:
+    description: Framework preset
+    required: false
+    default: raw-sql
+  fail-on:
+    description: Severity threshold that fails the job
+    required: false
+    default: high
+runs:
+  using: composite
+  steps:
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 10
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: pnpm
+    - name: Install workspace
+      shell: bash
+      run: pnpm install --frozen-lockfile
+    - name: Run migration safety check
+      shell: bash
+      run: |
+        set -euo pipefail
+        shopt -s globstar nullglob
+        files=(${{ inputs.files }})
+        if [ ${#files[@]} -eq 0 ]; then
+          echo "No migration SQL files matched."
+          exit 0
+        fi
+        for file in "${files[@]}"; do
+          echo "Checking $file"
+          pnpm exec pg-migration-check \
+            --file "$file" \
+            --postgres-version ${{ inputs.postgres-version }} \
+            --framework ${{ inputs.framework }} \
+            --fail-on ${{ inputs.fail-on }}
+        done

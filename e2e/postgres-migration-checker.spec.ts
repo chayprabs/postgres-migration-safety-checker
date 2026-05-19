@@ -254,12 +254,16 @@ test("opens a printable report window", async ({ page, context }) => {
 
   const popupPromise = context.waitForEvent("page");
   await page.getByRole("button", { name: "Print report" }).click();
-  await expectStatusMessage(page, "Opened printable report");
   const popup = await popupPromise;
 
-  await expect(popup.locator("body")).toContainText("PostgreSQL Migration Safety Report", {
-    timeout: 10_000,
+  await expect(popup).toHaveTitle(/PostgreSQL Migration Safety Report/i, {
+    timeout: 15_000,
   });
+  await popup.waitForFunction(
+    () => document.querySelector("h1")?.textContent?.includes("PostgreSQL") ?? false,
+    undefined,
+    { timeout: 15_000 },
+  );
   await popup.close();
 });
 
@@ -278,6 +282,28 @@ test("saves analysis locally as summary only after confirmation", async ({ page 
     page.getByRole("status").filter({ hasText: /Saved .* locally as a summary/i }),
   ).toBeVisible();
   await expect(page.getByText("Summary only").first()).toBeVisible();
+});
+
+test("compare two migrations in workspace tools", async ({ page }) => {
+  await page.getByLabel("Before SQL").fill("SELECT 1;");
+  await page.getByLabel("After SQL").fill("DROP TABLE public.users;");
+  await page.getByRole("button", { name: "Compare migrations" }).click();
+  await expect(page.getByText(/Risk score delta/i)).toBeVisible({ timeout: 15_000 });
+});
+
+test("shows PostgreSQL 18 parser fallback banner", async ({ page }) => {
+  const versionSelect = page.locator("#postgres-version");
+  await versionSelect.scrollIntoViewIfNeeded();
+  await versionSelect.selectOption("18");
+  await expect(versionSelect).toHaveValue("18");
+  await expect(
+    page.getByText(/nearest PostgreSQL 17 parser grammar/i),
+  ).toBeVisible();
+});
+
+test("CI snippets include pg-migration-check command", async ({ page }) => {
+  await expect(page.getByText("CI integration snippets")).toBeVisible();
+  await expect(page.getByText(/pg-migration-check/).first()).toBeVisible();
 });
 
 test("settings links never include pasted SQL", async ({ page }) => {

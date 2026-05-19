@@ -142,16 +142,26 @@ pnpm build
 pnpm test:e2e
 ```
 
+## Checker extras (shipped)
+
+- **Compare two migrations** — side-by-side before/after in the workspace tools section.
+- **Schema context** — optional pasted DDL for relationship-aware checks (not included in share links).
+- **CI snippets** — copy GitHub Actions, GitLab, and shell starters from the UI.
+- **CLI** — `pnpm exec pg-migration-check` ([`docs/cli.md`](./docs/cli.md)).
+- **GitHub Action** — `packages/pg-migration-action` ([`docs/ci-integration.md`](./docs/ci-integration.md)).
+- **PR webhook** — optional `/api/github/migration-review` ([`docs/github-pr-integration.md`](./docs/github-pr-integration.md)).
+- **Browser extension** — `apps/browser-extension` ([`docs/browser-extension.md`](./docs/browser-extension.md)).
+- **Docker self-host** — [`docker-compose.yml`](./docker-compose.yml) ([`docs/self-host-docker.md`](./docs/self-host-docker.md)).
+
+```bash
+pnpm test:analyzer && pnpm test:cli
+pnpm check:parser
+```
+
 ## Known future improvements
 
-- CI snippet generator for migration review steps.
-- GitHub PR comment integration.
-- Browser extension.
-- CLI companion.
-- Broader PostgreSQL parser version coverage.
-- Schema-aware checks with optional local schema paste.
-- Compare-two-migrations workflow.
-- Team and self-hosted private deployment options.
+- Native PostgreSQL 18 parser when `@supabase/pg-parser` ships WASM support (UI shows fallback banner today).
+- Published npm packages for CLI/Action (workspace packages work today).
 - More tools across the wider Authos product.
 
 ## Additional documentation
@@ -162,3 +172,8 @@ pnpm test:e2e
 - [`docs/roadmap.md`](./docs/roadmap.md)
 - [`docs/architecture.md`](./docs/architecture.md)
 - [`docs/postgres-migration-checker-rules.md`](./docs/postgres-migration-checker-rules.md)
+- [`docs/ci-integration.md`](./docs/ci-integration.md)
+- [`docs/cli.md`](./docs/cli.md)
+- [`docs/github-pr-integration.md`](./docs/github-pr-integration.md)
+- [`docs/browser-extension.md`](./docs/browser-extension.md)
+- [`docs/self-host-docker.md`](./docs/self-host-docker.md)
