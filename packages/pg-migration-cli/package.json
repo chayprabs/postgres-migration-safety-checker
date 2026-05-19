@@ -1,0 +1,21 @@
+{
+  "name": "@authos/pg-migration-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pg-migration-check": "./bin/pg-migration-check.mjs"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@authos/pg-migration-analyzer": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.4",
+    "typescript": "^5",
+    "vitest": "^4.1.5"
+  }
+}
