@@ -17,7 +17,7 @@ only configures pnpm build ignores; it does not define workspace packages.
 ## Production deployment
 
 - **This checker is not deployed at `https://postgres-migration-safety-checker.dev`.** That domain serves a
-  different product (AuthOS — a self-hosted authentication platform by
+  different product (unrelated authentication product — a self-hosted authentication platform by
   `drmhse/sso`). The checker route `/tools/postgres-migration-safety-checker`
   returns **404** there.
 - **No production URL for this repo is configured in git.** Deploy by connecting
