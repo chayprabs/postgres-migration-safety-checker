@@ -18,4 +18,4 @@
 ## Product and deployment expansion
 
 - Team and private self-hosted hardening (SSO, audit logs) beyond the current Docker image
-- More Authos tools beyond PostgreSQL migration review, while keeping the same local-first direction
+- More PostgreSQL Migration Safety Checker tools beyond PostgreSQL migration review, while keeping the same local-first direction

@@ -8,7 +8,7 @@ against the repository, dependency capabilities, and live domain checks.
 | Name | Value |
 |------|--------|
 | Git remote | `https://github.com/chayprabs/postgres-migration-safety-checker` |
-| npm `package.json` name | `authos` (product codename for the multi-tool site) |
+| npm `package.json` name | `postgres-migration-safety-checker` (product codename for the multi-tool site) |
 | Shipped tool | PostgreSQL Migration Safety Checker only |
 
 This is a **single-app repository**, not a monorepo. The `pnpm-workspace.yaml` file
@@ -16,7 +16,7 @@ only configures pnpm build ignores; it does not define workspace packages.
 
 ## Production deployment
 
-- **This checker is not deployed at `https://authos.dev`.** That domain serves a
+- **This checker is not deployed at `https://postgres-migration-safety-checker.dev`.** That domain serves a
   different product (AuthOS — a self-hosted authentication platform by
   `drmhse/sso`). The checker route `/tools/postgres-migration-safety-checker`
   returns **404** there.
@@ -60,7 +60,7 @@ After `pnpm install`:
 
 ## Next tools and shared architecture
 
-- Additional Authos tools are **registry placeholders** in `src/config/tools.ts`
+- Additional PostgreSQL Migration Safety Checker tools are **registry placeholders** in `src/config/tools.ts`
   (`comingSoonTools`) without routes or feature modules.
 - The intended pattern for new tools is documented in `docs/architecture.md`:
   registry entry → `src/features/<tool>` → `src/app/tools/<slug>/page.tsx`.
@@ -71,10 +71,10 @@ After `pnpm install`:
 
 ## Branding and trademark note
 
-- **Authos** (this repo) is a browser-first **developer tools** brand name used in
+- **PostgreSQL Migration Safety Checker** (this repo) is a browser-first **developer tools** brand name used in
   UI copy and package metadata.
-- **`authos.dev`** is occupied by an unrelated **authentication / SSO** product.
+- **`postgres-migration-safety-checker.dev`** is occupied by an unrelated **authentication / SSO** product.
   Do not point `NEXT_PUBLIC_SITE_URL` at that domain for this project unless you
   intentionally control a separate deployment path on it.
 - This document is not legal advice; perform your own trademark and domain review
-  before public launch under the Authos name.
+  before public launch under the PostgreSQL Migration Safety Checker name.

@@ -1,8 +1,8 @@
-# Authos Architecture
+# PostgreSQL Migration Safety Checker Architecture
 
 ## Purpose
 
-Authos is a multi-tool website for developer workflows that benefit from strong
+PostgreSQL Migration Safety Checker is a multi-tool website for developer workflows that benefit from strong
 privacy boundaries and explicit product contracts. The current app is still
 small, but the structure is designed so additional tools can be added without
 turning the codebase into a single pile of shared strings and one-off logic.

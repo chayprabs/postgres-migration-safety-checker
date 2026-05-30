@@ -2,7 +2,7 @@
 
 ## Environment and metadata
 
-- [ ] Set `NEXT_PUBLIC_SITE_URL` to the real production origin (not `https://authos.dev`;
+- [ ] Set `NEXT_PUBLIC_SITE_URL` to the real production origin (not `https://postgres-migration-safety-checker.dev`;
   see `docs/project-facts.md`).
 - [ ] Confirm canonical metadata, Open Graph metadata, `robots.txt`, and
   `sitemap.xml` all use the production URL.

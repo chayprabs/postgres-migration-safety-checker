@@ -1,6 +1,6 @@
 # CI integration
 
-Use the Authos PostgreSQL migration checker in CI with the workspace CLI or the composite GitHub Action in this repository.
+Use the PostgreSQL Migration Safety Checker PostgreSQL migration checker in CI with the workspace CLI or the composite GitHub Action in this repository.
 
 ## CLI (recommended)
 

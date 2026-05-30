@@ -1,6 +1,6 @@
 # Self-hosted Docker
 
-Run the Authos web app (PostgreSQL Migration Safety Checker) on your own network.
+Run the PostgreSQL Migration Safety Checker web app (PostgreSQL Migration Safety Checker) on your own network.
 
 ## Requirements
 
@@ -13,7 +13,7 @@ Run the Authos web app (PostgreSQL Migration Safety Checker) on your own network
 docker compose up --build
 ```
 
-Open `http://localhost:3000/tools/postgres-migration-safety-checker`.
+Open `http://localhost:3000/`.
 
 ## Production
 

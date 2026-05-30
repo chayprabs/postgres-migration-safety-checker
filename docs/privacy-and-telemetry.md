@@ -2,10 +2,10 @@
 
 ## Product promise
 
-Authos is a browser-first developer tools website. The PostgreSQL Migration
+PostgreSQL Migration Safety Checker is a browser-first developer tools website. The PostgreSQL Migration
 Safety Checker is intentionally designed so migration SQL can be pasted,
 uploaded, analyzed, redacted, exported, and optionally saved locally without
-being uploaded to Authos.
+being uploaded to PostgreSQL Migration Safety Checker.
 
 Telemetry must preserve that promise.
 
