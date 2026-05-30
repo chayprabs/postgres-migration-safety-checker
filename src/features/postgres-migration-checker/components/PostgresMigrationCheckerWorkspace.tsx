@@ -55,7 +55,7 @@ import {
   type TableSizeProfile,
   type TransactionAssumptionMode,
 } from "@/features/postgres-migration-checker";
-import { collectSecretRedactionMatches, redactSecretsInText } from "@authos/pg-migration-analyzer";
+import { collectSecretRedactionMatches, redactSecretsInText } from "@pg-migration-checker/analyzer";
 import {
   clearSavedLocalHistory,
   deleteSavedLocalAnalysis,
@@ -83,13 +83,13 @@ import {
   createHtmlReport,
   createMarkdownReport,
   stringifyJsonReport,
-} from "@authos/pg-migration-analyzer";
+} from "@pg-migration-checker/analyzer";
 import {
   downloadTextFile,
   getReportFilenames,
   openPrintReport,
 } from "../reports/download";
-import type { ReportExportInput } from "@authos/pg-migration-analyzer";
+import type { ReportExportInput } from "@pg-migration-checker/analyzer";
 import {
   LOAD_POSTGRES_MIGRATION_SAMPLE_EVENT,
   type LoadPostgresMigrationSampleDetail,
@@ -1705,7 +1705,7 @@ export function PostgresMigrationCheckerWorkspace() {
               </div>
               <div className="space-y-2">
                 <p className="text-sm font-medium text-foreground">
-                  Local-first: your SQL is analyzed in this browser. Authos does not upload or store migration contents.
+                  Local-first: your SQL is analyzed in this browser. This tool does not upload or store migration contents.
                 </p>
                 <details
                   open={isPrivacyExplanationOpen}
@@ -1984,7 +1984,7 @@ export function PostgresMigrationCheckerWorkspace() {
                 </p>
                 <p className="text-sm leading-7 text-muted-foreground">
                   Saved analyses stay in this browser only. They are not uploaded
-                  to Authos.
+                  to our servers.
                 </p>
                 <p className="text-sm leading-7 text-muted-foreground">
                   Raw SQL history is off by default. Nothing is saved unless you

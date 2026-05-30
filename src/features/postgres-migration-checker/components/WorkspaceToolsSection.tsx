@@ -1,6 +1,6 @@
 "use client";
 
-import type { AnalysisSettings } from "@authos/pg-migration-analyzer";
+import type { AnalysisSettings } from "@pg-migration-checker/analyzer";
 import { CiSnippetsPanel } from "./CiSnippetsPanel";
 import { CompareMigrationPanel } from "./CompareMigrationPanel";
 

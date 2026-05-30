@@ -1,6 +1,6 @@
 "use client";
 
-import type { FindingRecipeGroup } from "@authos/pg-migration-analyzer";
+import type { FindingRecipeGroup } from "@pg-migration-checker/analyzer";
 import type {
   Finding,
   FrameworkAnalysisMetadata,

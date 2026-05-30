@@ -33,7 +33,6 @@ import {
   placeholder as editorPlaceholder,
   rectangularSelection,
 } from "@codemirror/view";
-import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils";
 
 type CodeEditorProps = {
@@ -159,7 +158,6 @@ export function CodeEditor({
 }: CodeEditorProps) {
   const editorHostRef = useRef<HTMLDivElement | null>(null);
   const editorViewRef = useRef<EditorView | null>(null);
-  const { resolvedTheme } = useTheme();
   const handleChange = useEffectEvent((nextValue: string) => {
     onChange(nextValue);
   });
@@ -168,7 +166,7 @@ export function CodeEditor({
   const [readOnlyCompartment] = useState(() => new Compartment());
   const [contentAttributesCompartment] = useState(() => new Compartment());
   const [placeholderCompartment] = useState(() => new Compartment());
-  const themeMode = resolvedTheme === "dark" ? "dark" : "light";
+  const themeMode = "light" as const;
 
   useEffect(() => {
     if (!editorHostRef.current || editorViewRef.current) {
@@ -195,7 +193,7 @@ export function CodeEditor({
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         autocompletion(),
         closeBrackets(),
-        themeCompartment.of(buildEditorTheme(themeMode === "dark")),
+        themeCompartment.of(buildEditorTheme(false)),
         editableCompartment.of(EditorView.editable.of(!readOnly)),
         readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
         contentAttributesCompartment.of(
@@ -270,7 +268,7 @@ export function CodeEditor({
     }
 
     view.dispatch({
-      effects: themeCompartment.reconfigure(buildEditorTheme(themeMode === "dark")),
+      effects: themeCompartment.reconfigure(buildEditorTheme(false)),
     });
   }, [themeCompartment, themeMode]);
 

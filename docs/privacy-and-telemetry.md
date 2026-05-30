@@ -142,7 +142,7 @@ The adapter currently supports an optional browser hook vendor:
 
 When configured, the adapter will call:
 
-- `window.__AUTHOS_ANALYTICS__?.track(eventName, sanitizedPayload)`
+- `window.__PG_MIGRATION_CHECKER_ANALYTICS__?.track(eventName, sanitizedPayload)`
 
 If the env vars are missing, production remains a no-op.
 

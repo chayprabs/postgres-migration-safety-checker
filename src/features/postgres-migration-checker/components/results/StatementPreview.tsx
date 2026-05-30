@@ -1,6 +1,6 @@
 "use client";
 
-import { redactSecretsInText } from "@authos/pg-migration-analyzer";
+import { redactSecretsInText } from "@pg-migration-checker/analyzer";
 import type { MigrationStatement } from "../../types";
 import { Card } from "@/components/Card";
 

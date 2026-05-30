@@ -13,7 +13,7 @@
 ## PostgreSQL checker (next)
 
 - Native PostgreSQL 18 parser when upstream WASM is available (fallback banner and tests today)
-- Optional npm publish for `@authos/pg-migration-cli` and `@authos/pg-migration-analyzer`
+- Optional npm publish for `@pg-migration-checker/cli` and `@pg-migration-checker/analyzer`
 
 ## Product and deployment expansion
 

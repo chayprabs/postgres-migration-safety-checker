@@ -104,7 +104,7 @@ export type SettingsLinkCopiedPayload = {
 
 declare global {
   interface Window {
-    __AUTHOS_ANALYTICS__?: {
+    __PG_MIGRATION_CHECKER_ANALYTICS__?: {
       track: (eventName: AnalyticsEventName, payload: AnalyticsSanitizedPayload) => void;
     };
   }
@@ -346,7 +346,7 @@ function sendToVendor(event: AnalyticsDebugEvent) {
   }
 
   if (configuredVendor.vendor === "window-hook") {
-    window.__AUTHOS_ANALYTICS__?.track(event.name, event.payload);
+    window.__PG_MIGRATION_CHECKER_ANALYTICS__?.track(event.name, event.payload);
   }
 }
 

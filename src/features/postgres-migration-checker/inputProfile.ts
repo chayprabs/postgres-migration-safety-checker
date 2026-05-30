@@ -1,1 +1,1 @@
-export * from "@authos/pg-migration-analyzer";
+export * from "@pg-migration-checker/analyzer";

@@ -6,7 +6,7 @@ The MV3 extension under `apps/browser-extension` analyzes SQL migration files on
 
 ```bash
 pnpm install
-pnpm --filter @authos/postgres-migration-browser-extension build
+pnpm --filter @pg-migration-checker/browser-extension build
 ```
 
 ## Load unpacked (Chrome)

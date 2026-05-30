@@ -2,7 +2,7 @@ import {
   runAnalysisPipeline,
   type AnalysisResult,
   type AnalysisSettings,
-} from "@authos/pg-migration-analyzer";
+} from "@pg-migration-checker/analyzer";
 
 type AnalyzerWorkerRequest = {
   id: number;

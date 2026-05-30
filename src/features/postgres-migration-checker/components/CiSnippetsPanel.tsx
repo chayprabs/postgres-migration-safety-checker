@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
-import { generateCiSnippets, type AnalysisSettings } from "@authos/pg-migration-analyzer";
+import { generateCiSnippets, type AnalysisSettings } from "@pg-migration-checker/analyzer";
 
 type CiSnippetsPanelProps = {
   settings: AnalysisSettings;

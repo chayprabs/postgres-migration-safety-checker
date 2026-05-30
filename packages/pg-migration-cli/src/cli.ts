@@ -1,12 +1,12 @@
 import { readFileSync } from "node:fs";
-import { runAnalysisPipeline } from "@authos/pg-migration-analyzer";
+import { runAnalysisPipeline } from "@pg-migration-checker/analyzer";
 import type {
   AnalysisSettings,
   FrameworkPreset,
   PostgresVersion,
   TableSizeProfile,
-} from "@authos/pg-migration-analyzer";
-import { getUtf8ByteLength } from "@authos/pg-migration-analyzer";
+} from "@pg-migration-checker/analyzer";
+import { getUtf8ByteLength } from "@pg-migration-checker/analyzer";
 
 type CliOptions = {
   file?: string;

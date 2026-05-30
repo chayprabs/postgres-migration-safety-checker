@@ -2,7 +2,7 @@ import type { FindingsCategoryFilter, FindingsSeverityFilter, FindingsSortMode }
 import type { TableSizeProfile, TransactionAssumptionMode } from "@/features/postgres-migration-checker";
 
 export const WORKSPACE_SETTINGS_STORAGE_KEY =
-  "authos.postgres-migration-checker.workspace-settings.v1";
+  "pg-migration-checker.workspace.workspace-settings.v1";
 export const TOOL_ID = "postgres-migration-safety-checker";
 export const STATUS_MESSAGE_TTL_MS = 3200;
 export const AUTO_ANALYZE_DEBOUNCE_MS = 750;

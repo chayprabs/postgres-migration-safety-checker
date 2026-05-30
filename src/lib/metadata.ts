@@ -64,7 +64,7 @@ export function buildPageMetadata({
       description,
       url: canonical,
       type,
-      siteName: "Authos",
+      siteName: "PG Migration Checker",
     },
     twitter: {
       card: "summary",

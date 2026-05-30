@@ -1,5 +1,5 @@
 export const LOAD_POSTGRES_MIGRATION_SAMPLE_EVENT =
-  "authos:postgres-migration-checker:load-sample";
+  "pg-migration-checker:load-sample";
 
 export type LoadPostgresMigrationSampleDetail = {
   sampleId: string;

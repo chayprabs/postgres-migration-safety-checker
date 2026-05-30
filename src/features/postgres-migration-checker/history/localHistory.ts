@@ -1,4 +1,4 @@
-import { redactSecretsInText } from "@authos/pg-migration-analyzer";
+import { redactSecretsInText } from "@pg-migration-checker/analyzer";
 import type {
   AnalysisResult,
   AnalysisSettings,
@@ -22,7 +22,7 @@ type SaveLocalAnalysisInput = {
 };
 
 const LOCAL_HISTORY_STORAGE_KEY =
-  "authos.postgres-migration-checker.local-history.v1";
+  "pg-migration-checker.workspace.local-history.v1";
 const localHistoryListeners = new Set<() => void>();
 let inMemorySavedAnalyses: SavedLocalAnalysis[] | null = null;
 

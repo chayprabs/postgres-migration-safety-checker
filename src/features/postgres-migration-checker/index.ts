@@ -1,4 +1,4 @@
-export * from "@authos/pg-migration-analyzer";
+export * from "@pg-migration-checker/analyzer";
 export * from "./content";
 export * from "./docs";
 export * from "./structuredData";

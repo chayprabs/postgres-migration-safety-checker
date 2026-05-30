@@ -7,7 +7,7 @@ import {
   compareMigrations,
   type AnalysisSettings,
   type MigrationComparisonResult,
-} from "@authos/pg-migration-analyzer";
+} from "@pg-migration-checker/analyzer";
 
 type CompareMigrationPanelProps = {
   settings: AnalysisSettings;

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, type Page, test } from "@playwright/test";
 
-const TOOL_PATH = "/tools/postgres-migration-safety-checker";
+const TOOL_PATH = "/";
 const FAKE_GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz123456";
 const UNIQUE_SQL_SENTINEL = "UNIQUE_SQL_SENTINEL_8675309";
 
@@ -46,18 +46,13 @@ test.beforeEach(async ({ page }) => {
   });
 
   await page.goto(TOOL_PATH);
-  await expect(
-    page.getByRole("heading", {
-      level: 1,
-      name: /PostgreSQL Migration Safety Checker/i,
-    }),
-  ).toBeVisible();
+  await expect(page.getByLabel("Migration SQL editor")).toBeVisible();
 });
 
 test("page loads with the core workspace UI", async ({ page }) => {
   await expect(
     page.getByText(
-      /Local-first: your SQL is analyzed in this browser\. Authos does not upload or store migration contents\./i,
+      /Local-first: your SQL is analyzed in this browser\. This tool does not upload or store migration contents\./i,
     ),
   ).toBeVisible();
   await expect(page.getByLabel("Migration SQL editor")).toBeVisible();

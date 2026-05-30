@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Authos PostgreSQL Migration Checker",
+  "name": "PG Migration Checker",
   "version": "0.1.0",
-  "description": "Analyze GitHub SQL migration blobs locally with the Authos migration checker.",
+  "description": "Analyze GitHub SQL migration blobs locally with the Migration safety checker.",
   "permissions": [],
   "host_permissions": [
     "https://github.com/*",

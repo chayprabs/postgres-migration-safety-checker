@@ -13,7 +13,7 @@ export const postgresMigrationCheckerChecks = [
 export const postgresMigrationCheckerBrowserPromises = [
   "No login required for the first tool.",
   "Pasted SQL is intended to stay in your browser.",
-  "No upload of migration text to Authos servers.",
+  "No upload of migration text to this service servers.",
   "No database connection required to inspect a script.",
 ] as const;
 
@@ -145,7 +145,7 @@ export const postgresMigrationCheckerUseCases = [
 
 export const postgresMigrationCheckerWhyLocalFirstPoints = [
   "Migrations can reveal schema design, customer model names, and business logic that should stay inside your team.",
-  "The default Authos tool should not upload raw SQL just to provide a basic safety review.",
+  "The default tool should not upload raw SQL just to provide a basic safety review.",
   "Product analytics, if added later, must never include raw SQL or schema-specific payloads.",
 ] as const;
 
@@ -163,7 +163,7 @@ export const postgresMigrationCheckerFaqEntries = [
   {
     question: "Does my SQL leave the browser?",
     answer:
-      "The first Authos tool is intentionally designed so pasted SQL stays in the browser. Raw SQL should not be uploaded to a backend and should never appear in analytics payloads.",
+      "The tool is intentionally designed so pasted SQL stays in the browser. Raw SQL should not be uploaded to a backend and should never appear in analytics payloads.",
   },
   {
     question: "What PostgreSQL versions are supported?",

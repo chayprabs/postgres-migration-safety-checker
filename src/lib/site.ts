@@ -1,29 +1,10 @@
-export type NavigationItem = {
-  href: string;
-  label: string;
-};
-
 export const siteConfig = {
-  name: "Authos",
-  description:
-    "Browser-first developer tools for careful shipping, starting with PostgreSQL migration safety.",
-  tagline: "Browser-based tools for developers who need answers fast.",
-  privacyNote: "Most tools are designed to run locally in your browser.",
+  name: "PG Migration Checker",
+  fullName: "PostgreSQL Migration Safety Checker",
+  description: "Review PostgreSQL migration SQL locally for lock risk, destructive operations, and safer rollout patterns before deploy.",
+  tagline: "Paste or upload migration SQL and get instant safety findings in your browser.",
+  githubUrl: "https://github.com/chayprabs/postgres-migration-safety-checker",
+  twitterUrl: "https://x.com/chayprabs",
+  websiteUrl: "https://www.chaitanyaprabuddha.com",
+  privacyNote: "Analysis runs in your browser. Migration SQL is not uploaded to our servers.",
 };
-
-export const headerNavigation: NavigationItem[] = [
-  { href: "/tools", label: "Tools" },
-  { href: "/docs", label: "Docs" },
-  { href: "/privacy", label: "Privacy" },
-  { href: "/about", label: "About" },
-];
-
-export const footerNavigation = headerNavigation;
-
-export const footerCategories = [
-  "API",
-  "SQL",
-  "Kubernetes",
-  "Security",
-  "Data",
-] as const;

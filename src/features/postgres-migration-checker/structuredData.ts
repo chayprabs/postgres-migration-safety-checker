@@ -31,7 +31,7 @@ export function getPostgresMigrationCheckerStructuredData() {
       ],
       creator: {
         "@type": "Organization",
-        name: "Authos",
+        name: "Chaitanya Prabuddha",
       },
     },
     faqPage: {

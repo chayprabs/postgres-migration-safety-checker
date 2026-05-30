@@ -1,17 +1,9 @@
 {
-  "name": "@authos/postgres-migration-browser-extension",
+  "name": "@pg-migration-checker/browser-extension",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "build": "vite build",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@authos/pg-migration-analyzer": "workspace:*"
-  },
-  "devDependencies": {
-    "typescript": "^5",
-    "vite": "^6.3.5"
-  }
+  "scripts": { "build": "vite build", "typecheck": "tsc --noEmit" },
+  "dependencies": { "@pg-migration-checker/analyzer": "workspace:*" },
+  "devDependencies": { "typescript": "^5", "vite": "^6.3.5" }
 }

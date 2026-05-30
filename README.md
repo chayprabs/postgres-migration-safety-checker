@@ -1,179 +1,38 @@
-# Authos
+# PostgreSQL Migration Safety Checker
 
-Authos is a browser-first developer tools product. The current launchable surface
-is the PostgreSQL Migration Safety Checker: a local-first review tool for pasted
-or uploaded migration SQL that highlights lock risk, transaction hazards,
-destructive operations, parser fallback states, and safer rollout patterns
-before deploy.
+Local-first web tool to review PostgreSQL migration SQL before deploy. Paste or upload `.sql`, click **Analyze migration**, and get lock-risk findings, safer rewrites, and exportable reports — all in your browser.
 
-## Product overview
+## Use it
 
-- No login is required for the PostgreSQL checker.
-- SQL can be pasted directly into the editor or loaded from a local `.sql` file.
-- Analysis runs in the browser with a Web Worker path when available and a
-  main-thread fallback when needed.
-- Findings include a risk score, summary, lock context, safer rewrite guidance,
-  and framework-aware advice for Rails, Django, Prisma, and raw SQL workflows.
-- Reports can be copied or downloaded as Markdown, HTML, and JSON.
-- Reports omit raw SQL snippets by default.
+Open `/` — no login. Your SQL stays in the browser.
+
+## Develop
+
+```bash
+pnpm install
+pnpm exec playwright install chromium
+pnpm lint && pnpm typecheck && pnpm test && pnpm test:analyzer && pnpm test:cli && pnpm build && pnpm test:e2e
+pnpm dev
+```
 
 ## Routes
 
-- `/`
-- `/tools`
-- `/tools/postgres-migration-safety-checker`
-- `/docs`
-- `/docs/postgresql-migration-locks`
-- `/docs/create-index-concurrently`
-- `/docs/safe-postgres-not-null-migration`
-- `/docs/postgres-foreign-key-not-valid`
-- `/docs/rails-postgres-migration-safety`
-- `/privacy`
-- `/about`
-- `/robots.txt`
-- `/sitemap.xml`
+- `/` — checker
+- `/privacy` — privacy policy
+- `/terms` — terms & conditions
 
-## Quickstart (clean clone)
+## Packages
 
-```bash
-pnpm install
-pnpm exec playwright install chromium   # first time only, for E2E
-pnpm lint && pnpm typecheck && pnpm test && pnpm build
-pnpm dev
-```
+- `@pg-migration-checker/analyzer` — rule engine
+- `@pg-migration-checker/cli` — `pg-migration-check`
+- `packages/pg-migration-action` — GitHub Action
 
-Open `http://localhost:3000` for local development. See [`docs/project-facts.md`](./docs/project-facts.md) for
-repository naming, domain guidance, and verification notes.
+## Deploy
 
-## Setup
+Set `NEXT_PUBLIC_SITE_URL` to your production URL on Vercel or Docker (`docker compose up --build`).
 
-```bash
-pnpm install
-pnpm dev
-```
+## License
 
-## Environment variables
+MIT — see [LICENSE](./LICENSE).
 
-Copy `.env.example` to `.env.local` when you need local overrides.
-
-- `NEXT_PUBLIC_SITE_URL`
-  Use your real deployment origin for canonical metadata, the sitemap, and
-  `robots.txt`. On Vercel this can be left unset (the build uses `VERCEL_URL`).
-  **Do not use `https://authos.dev`** — that domain is an unrelated authentication
-  product. See [`docs/project-facts.md`](./docs/project-facts.md).
-- `NEXT_PUBLIC_ANALYTICS_VENDOR`
-  Optional. Only set this if you deliberately wire a sanitized browser-side
-  analytics hook.
-- `NEXT_PUBLIC_ANALYTICS_KEY`
-  Optional companion public key for the analytics hook.
-
-## Testing and verification
-
-```bash
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
-pnpm test:e2e
-```
-
-If Playwright browsers are not installed yet:
-
-```bash
-pnpm exec playwright install chromium
-```
-
-Helpful extras:
-
-```bash
-pnpm test:watch
-pnpm test:e2e:ui
-```
-
-## Privacy model
-
-- Analysis is designed to run locally in the browser.
-- Uploaded `.sql` files are read by the browser only.
-- Raw SQL is not embedded in shareable settings links.
-- Raw SQL is not sent through the analytics adapter.
-- Reports are generated locally.
-- Local history is opt-in and requires explicit confirmation before storing SQL.
-- Summary-only saves avoid storing SQL by default.
-
-More detail: [`docs/privacy-and-telemetry.md`](./docs/privacy-and-telemetry.md)
-
-## Analyzer limitations
-
-- This tool does not connect to your database, inspect live locks, or observe
-  table size directly.
-- Severity tuning uses the table-size profile you choose, not live row counts.
-- Parser fallback can still produce useful findings, but those findings are less
-  precise than a full parser-backed run.
-- Large migrations may require manual confirmation, worker-only execution, or a
-  CLI/CI workflow instead of browser analysis.
-- The checker helps with migration review, but it does not guarantee zero
-  downtime or replace rollout planning.
-
-## Deployment
-
-### Vercel
-
-1. Create a new Vercel project from this repository.
-2. Set `NEXT_PUBLIC_SITE_URL` to the production origin.
-3. Install dependencies with `pnpm`.
-4. Keep the default Next.js build command or use `pnpm build`.
-5. Run the verification commands below before promoting the deploy.
-
-### Any static-capable Next.js host
-
-1. Set `NEXT_PUBLIC_SITE_URL`.
-2. Run `pnpm install`.
-3. Run the full verification stack.
-4. Deploy with `pnpm build` and `pnpm start`, or your host's equivalent Next.js
-   production flow.
-
-## Commands before deployment
-
-```bash
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
-pnpm test:e2e
-```
-
-## Checker extras (shipped)
-
-- **Compare two migrations** — side-by-side before/after in the workspace tools section.
-- **Schema context** — optional pasted DDL for relationship-aware checks (not included in share links).
-- **CI snippets** — copy GitHub Actions, GitLab, and shell starters from the UI.
-- **CLI** — `pnpm exec pg-migration-check` ([`docs/cli.md`](./docs/cli.md)).
-- **GitHub Action** — `packages/pg-migration-action` ([`docs/ci-integration.md`](./docs/ci-integration.md)).
-- **PR webhook** — optional `/api/github/migration-review` ([`docs/github-pr-integration.md`](./docs/github-pr-integration.md)).
-- **Browser extension** — `apps/browser-extension` ([`docs/browser-extension.md`](./docs/browser-extension.md)).
-- **Docker self-host** — [`docker-compose.yml`](./docker-compose.yml) ([`docs/self-host-docker.md`](./docs/self-host-docker.md)).
-
-```bash
-pnpm test:analyzer && pnpm test:cli
-pnpm check:parser
-```
-
-## Known future improvements
-
-- Native PostgreSQL 18 parser when `@supabase/pg-parser` ships WASM support (UI shows fallback banner today).
-- Published npm packages for CLI/Action (workspace packages work today).
-- More tools across the wider Authos product.
-
-## Additional documentation
-
-- [`docs/project-facts.md`](./docs/project-facts.md)
-- [`docs/manual-qa-checklist.md`](./docs/manual-qa-checklist.md)
-- [`docs/launch-checklist.md`](./docs/launch-checklist.md)
-- [`docs/roadmap.md`](./docs/roadmap.md)
-- [`docs/architecture.md`](./docs/architecture.md)
-- [`docs/postgres-migration-checker-rules.md`](./docs/postgres-migration-checker-rules.md)
-- [`docs/ci-integration.md`](./docs/ci-integration.md)
-- [`docs/cli.md`](./docs/cli.md)
-- [`docs/github-pr-integration.md`](./docs/github-pr-integration.md)
-- [`docs/browser-extension.md`](./docs/browser-extension.md)
-- [`docs/self-host-docker.md`](./docs/self-host-docker.md)
+[GitHub](https://github.com/chayprabs/postgres-migration-safety-checker) · [@chayprabs](https://x.com/chayprabs) · [chaitanyaprabuddha.com](https://www.chaitanyaprabuddha.com)

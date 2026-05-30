@@ -4,7 +4,7 @@ import type {
   FindingRecipeGroup,
   SafeRewriteRecipe,
 } from "@/features/postgres-migration-checker";
-import { redactSecretsInText } from "@authos/pg-migration-analyzer";
+import { redactSecretsInText } from "@pg-migration-checker/analyzer";
 import { getConfidenceDetails, toHeadingCase } from "./findingUtils";
 
 export function getOutputSqlSnippet(sqlSnippet: string, redactionMode: boolean) {

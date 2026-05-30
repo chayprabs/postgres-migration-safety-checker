@@ -1,6 +1,6 @@
 # CLI usage
 
-The `@authos/pg-migration-cli` package exposes the `pg-migration-check` binary.
+The `@pg-migration-checker/cli` package exposes the `pg-migration-check` binary.
 
 ## Install
 

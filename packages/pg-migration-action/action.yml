@@ -1,5 +1,5 @@
 name: PostgreSQL Migration Safety Check
-description: Analyze changed SQL migration files with the Authos migration checker CLI from this repository.
+description: Analyze changed SQL migration files with the PostgreSQL migration checker CLI from this repository.
 inputs:
   files:
     description: Glob for migration SQL files
